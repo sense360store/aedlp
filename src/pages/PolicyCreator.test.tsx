@@ -4,7 +4,10 @@ import { render, screen, fireEvent, cleanup, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router-dom";
 import PolicyCreator from "./PolicyCreator";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 function renderPage() {
   return render(
@@ -74,5 +77,50 @@ describe("PolicyCreator page", () => {
     fireEvent.click(screen.getByRole("button", { name: "ALL" }));
     expect(verdict()).toContain("No trigger");
     expect(verdict()).toContain("1/2");
+  });
+
+  it("renders the persistent nav with both destinations, Policy Creator active", () => {
+    renderPage();
+    const toPolicy = screen.getByRole("link", { name: "Policy Creator" });
+    const toExtractor = screen.getByRole("link", { name: "Trusted domains" });
+    expect(toPolicy.getAttribute("href")).toBe("/");
+    expect(toExtractor.getAttribute("href")).toBe("/trusted-domain-extractor");
+    // On "/" the Policy Creator link is the current page.
+    expect(toPolicy.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("surfaces the saved trusted-domain list for a recipient condition and loads it on demand", () => {
+    localStorage.setItem("aedlp_trusted_domains", JSON.stringify(["partner.com", "vendor.com"]));
+    const { container } = renderPage();
+
+    // Hidden until the draft has a recipient-domain condition.
+    expect(container.querySelector(".trusted-bar")).toBeNull();
+
+    addByName(container, "Personal Webmail"); // rcp-freemail (recipient_domain)
+    const bar = container.querySelector(".trusted-bar");
+    expect(bar).not.toBeNull();
+    expect(bar?.textContent).toContain("2");
+    expect(bar?.textContent).toMatch(/ready from your last extract/i);
+
+    // Loading is explicit — nothing happens until "Use" is clicked.
+    expect(screen.queryByText("Trusted / allowed recipient domains (from extract)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+
+    expect(screen.getByText("Trusted / allowed recipient domains (from extract)")).toBeTruthy();
+    expect(container.textContent).toContain("partner.com");
+    expect(container.textContent).toContain("vendor.com");
+  });
+
+  it("shows a quiet prompt and no error when there is no saved trusted-domain list", () => {
+    const { container } = renderPage(); // localStorage empty
+    addByName(container, "Personal Webmail");
+
+    const bar = container.querySelector(".trusted-bar");
+    expect(bar).not.toBeNull();
+    expect(bar?.className).toContain("quiet");
+    expect(bar?.textContent).not.toMatch(/ready from your last extract/i);
+    // It quietly offers to build a list; there is no "Use" action to load nothing.
+    expect(screen.getByRole("link", { name: /enforcer export/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use" })).toBeNull();
   });
 });

@@ -5,12 +5,13 @@
    State model and wiring ported from handoff project/app/App.jsx.
    ============================================================ */
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
+import { TopNav } from "../components/ui/TopNav";
 import { useTheme } from "../theme";
 import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
 import { buildEffectiveRegex } from "../lib/regex";
+import { loadTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
 import {
@@ -43,6 +44,10 @@ export default function PolicyCreator() {
   const [operator, setOperator] = useState<string>("OR");
   const [sample, setSample] = useState("");
   const [focus, setFocus] = useState<Detector | null>(null);
+  // Trusted-domain list handed over from the extractor (localStorage). Read
+  // once on mount and on explicit refresh — never written from this page.
+  const [trusted, setTrusted] = useState<string[]>([]);
+  useEffect(() => setTrusted(loadTrustedDomains()), []);
   const [draft, setDraft] = useState<PolicyDraftState>({
     name: "",
     description: "",
@@ -124,6 +129,20 @@ export default function PolicyCreator() {
     if (el) window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - 80, behavior: "smooth" });
   };
 
+  /* ----- trusted-domain handoff ----- */
+  const onRefreshTrusted = () => setTrusted(loadTrustedDomains());
+  /* Load (or replace) the curated allow-list as a recipient-domain condition.
+     A deliberate user action — the list is never injected automatically. */
+  const onUseTrusted = () => {
+    if (!trusted.length) return;
+    const cond = makeTrustedCondition(trusted);
+    setAdded((prev) =>
+      prev.some((c) => c.id === TRUSTED_CONDITION_ID)
+        ? prev.map((c) => (c.id === TRUSTED_CONDITION_ID ? cond : c))
+        : [...prev, cond],
+    );
+  };
+
   const set: DraftSetters = {
     name: (v) => setDraft((d) => ({ ...d, name: v, nameDirty: true })),
     description: (v) => setDraft((d) => ({ ...d, description: v, descDirty: true })),
@@ -153,15 +172,8 @@ export default function PolicyCreator() {
             <div className="brand-sub">Detector library &amp; custom-policy assembler</div>
           </div>
         </div>
+        <TopNav />
         <div className="topbar-spacer"></div>
-        <Link
-          className="btn sm ghost"
-          to="/trusted-domain-extractor"
-          title="Extract trusted domains from an enforcer export"
-        >
-          <Icon name="database" size={14} />
-          Domain Extractor
-        </Link>
         <span className="added-pill">
           <Icon name="layers" size={13} />
           {added.length} in policy
@@ -202,6 +214,10 @@ export default function PolicyCreator() {
             onToggleBoundary={onToggleBoundary}
             onClear={onClear}
             suggestions={suggestions}
+            trustedCount={trusted.length}
+            trustedDomains={trusted}
+            onUseTrusted={onUseTrusted}
+            onRefreshTrusted={onRefreshTrusted}
           />
           <div id="test-anchor"></div>
           <TestPanel
