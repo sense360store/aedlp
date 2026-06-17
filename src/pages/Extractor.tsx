@@ -5,13 +5,15 @@
    browser; the whitelist is handed to the Policy Creator through
    localStorage. Ported from handoff project/app/extractor.jsx.
    ============================================================ */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
+import { TopNav } from "../components/ui/TopNav";
 import { Card } from "../components/ui/Card";
 import { Callout } from "../components/ui/Callout";
 import { CopyButton } from "../components/ui/CopyButton";
 import { useTheme } from "../theme";
+import { saveTrustedDomains } from "../lib/trusted";
 import {
   isCSV,
   parseCSV,
@@ -22,8 +24,6 @@ import {
   TARGET_SHEET,
   type ParsedResult,
 } from "../lib/extract";
-
-const LS_KEY = "aedlp_trusted_domains";
 
 function fmtBytes(n: number): string {
   if (!n) return "";
@@ -103,6 +103,7 @@ type Stage = "idle" | "parsing" | "sheet" | "ready";
 /* ---------------- main app ---------------- */
 export default function Extractor() {
   const [theme, setTheme] = useTheme();
+  const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -191,10 +192,12 @@ export default function Extractor() {
     [baseDomains, deselected],
   );
 
-  // persist whitelist for the Policy Creator to pick up
-  useEffect(() => {
-    if (stage === "ready") localStorage.setItem(LS_KEY, JSON.stringify(whitelist));
-  }, [whitelist, stage]);
+  // Explicit handoff: save the curated allow-list and go to the Policy Creator.
+  // This is a deliberate user action, not a silent background write.
+  const useInPolicyCreator = () => {
+    saveTrustedDomains(whitelist);
+    navigate("/");
+  };
 
   const visible = useMemo(() => {
     let list = baseDomains;
@@ -261,11 +264,8 @@ export default function Extractor() {
             <div className="brand-sub">AEDLP · unauthorised-email whitelist</div>
           </div>
         </div>
+        <TopNav />
         <div className="topbar-spacer"></div>
-        <Link className="btn sm ghost" to="/">
-          <Icon name="shield" size={14} />
-          Policy Creator
-        </Link>
         <button className="iconbtn" title="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
           <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
         </button>
@@ -485,12 +485,28 @@ export default function Extractor() {
                 </div>
               </div>
 
-              <Card title={`Trusted-domain whitelist (${whitelist.length})`}>
+              <Card title={`Trusted-domain allow-list (${whitelist.length})`}>
                 <Callout tone="info" title="How to use this">
-                  These are the domains mail can be sent to <em>without</em> tripping the unauthorised-email condition.
-                  Copy or download the list and paste it into that condition’s allowed-domains field. The list is also
-                  saved in this browser for the Policy Creator to pick up.
+                  These are the <strong>trusted / allowed</strong> domains mail can be sent to <em>without</em> tripping
+                  the unauthorised-email condition — an allow-list, not a block list. Hand it straight to the Policy
+                  Creator with the button below, or copy / download it to paste into that condition’s allowed-domains
+                  field.
                 </Callout>
+                <div className="handoff-row">
+                  <button
+                    className="btn primary"
+                    onClick={useInPolicyCreator}
+                    disabled={!whitelist.length}
+                    title="Save this list and open the Policy Creator"
+                  >
+                    <Icon name="shield" size={14} />
+                    Use in Policy Creator
+                  </button>
+                  <span className="handoff-hint">
+                    Saves {whitelist.length.toLocaleString()} domain{whitelist.length === 1 ? "" : "s"} for the Policy
+                    Creator, then switches to it.
+                  </span>
+                </div>
                 <div className="export-grid" style={{ marginTop: 12 }}>
                   <CopyButton value={() => whitelist.join("\n")} label="Copy list" big />
                   <CopyButton value={() => whitelist.join(", ")} label="Comma-separated" big icon="list" />

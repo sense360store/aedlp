@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 // The real parser is covered in src/lib/extract.test.ts against the sample
 // workbook. Here we mock it so the page reaches the ready state deterministically
@@ -65,17 +65,26 @@ function clickAllSegment(container: HTMLElement) {
   fireEvent.click(allSeg);
 }
 
+function whitelistLines(container: HTMLElement): string[] {
+  const ta = container.querySelector("textarea.mono") as HTMLTextAreaElement;
+  return ta.value ? ta.value.split("\n") : [];
+}
+
 describe("Extractor page", () => {
-  it("renders the idle state with the topbar, intro and dropzone", () => {
+  it("renders the idle state with the persistent nav, intro and dropzone", () => {
     const { container } = renderPage();
     expect(screen.getByText("Trusted Domain Extractor")).toBeTruthy();
     expect(screen.getByText("Extract trusted third-party domains")).toBeTruthy();
     expect(container.querySelector(".dropzone")).not.toBeNull();
-    const link = screen.getByRole("link", { name: /Policy Creator/ });
-    expect(link.getAttribute("href")).toBe("/");
+
+    // Both nav destinations are reachable from the extractor page.
+    expect(screen.getByRole("link", { name: "Policy Creator" }).getAttribute("href")).toBe("/");
+    expect(screen.getByRole("link", { name: "Trusted domains" }).getAttribute("href")).toBe(
+      "/trusted-domain-extractor",
+    );
   });
 
-  it("reaches the ready state with the right stats and persists the whitelist", async () => {
+  it("reaches the ready state with the right stats and builds the whitelist (no silent write)", async () => {
     const { container } = renderPage();
     await selectFile(container);
 
@@ -88,23 +97,20 @@ describe("Extractor page", () => {
     // switch to "all" -> every domain is in scope
     clickAllSegment(container);
     expect(container.querySelectorAll(".dom-row")).toHaveLength(3);
+    expect(whitelistLines(container)).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
 
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem("aedlp_trusted_domains") || "[]");
-      expect(stored).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
-    });
+    // The handoff is explicit now: nothing is persisted until the user asks.
+    expect(localStorage.getItem("aedlp_trusted_domains")).toBeNull();
   });
 
-  it("deselecting a domain drops it from the persisted whitelist", async () => {
+  it("deselecting a domain drops it from the whitelist", async () => {
     const { container } = renderPage();
     await selectFile(container);
     clickAllSegment(container);
 
+    expect(whitelistLines(container)).toHaveLength(3);
     fireEvent.click(container.querySelector(".dom-row .chk") as HTMLButtonElement);
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem("aedlp_trusted_domains") || "[]");
-      expect(stored).toHaveLength(2);
-    });
+    expect(whitelistLines(container)).toHaveLength(2);
   });
 
   it("manually added domains appear with an added tag and enter the whitelist", async () => {
@@ -117,9 +123,27 @@ describe("Extractor page", () => {
 
     await waitFor(() => expect(container.textContent).toContain("partner.com"));
     expect(container.querySelector(".dom-tag")?.textContent).toBe("added");
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem("aedlp_trusted_domains") || "[]");
-      expect(stored).toContain("partner.com");
-    });
+    expect(whitelistLines(container)).toContain("partner.com");
+  });
+
+  it("the explicit 'Use in Policy Creator' handoff writes the list and navigates", async () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={["/trusted-domain-extractor"]}>
+        <Routes>
+          <Route path="/trusted-domain-extractor" element={<Extractor />} />
+          <Route path="/" element={<div>POLICY_CREATOR_STUB</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await selectFile(container);
+    clickAllSegment(container);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use in Policy Creator" }));
+
+    // Navigated to the Policy Creator route…
+    expect(screen.getByText("POLICY_CREATOR_STUB")).toBeTruthy();
+    // …and the curated allow-list was persisted under the shared key.
+    const stored = JSON.parse(localStorage.getItem("aedlp_trusted_domains") || "null");
+    expect(stored).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
   });
 });

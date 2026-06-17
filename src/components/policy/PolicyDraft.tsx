@@ -12,6 +12,7 @@ import { typeTone, typeShort } from "../../lib/tones";
 import { conditionCopyValue } from "../../lib/match";
 import { slugify } from "../../lib/suggest";
 import { AEDLP_DATA } from "../../data/library";
+import { TrustedDomainsBar } from "./TrustedDomainsBar";
 import type { Condition, RecommendedAction } from "../../types";
 
 export type ScanKey = "body" | "subject" | "attachments";
@@ -281,6 +282,11 @@ export interface PolicyDraftProps {
   onToggleBoundary: (id: string, on: boolean) => void;
   onClear: () => void;
   suggestions: DraftSuggestions;
+  /** Saved trusted-domain list (from the extractor) surfaced for recipient conditions. */
+  trustedCount?: number;
+  trustedDomains?: string[];
+  onUseTrusted?: () => void;
+  onRefreshTrusted?: () => void;
 }
 
 export function PolicyDraft({
@@ -293,8 +299,13 @@ export function PolicyDraft({
   onToggleBoundary,
   onClear,
   suggestions,
+  trustedCount = 0,
+  trustedDomains = [],
+  onUseTrusted = () => {},
+  onRefreshTrusted = () => {},
 }: PolicyDraftProps) {
   const empty = conditions.length === 0;
+  const hasRecipientCondition = conditions.some((c) => c.conditionType === "recipient_domain");
 
   const fullExport = () => {
     const lines: string[] = [];
@@ -424,6 +435,18 @@ export function PolicyDraft({
             </button>
           )}
         </div>
+
+        {/* Trusted-domain handoff: only relevant once a recipient-domain
+            condition is in the draft. Loading the list is a visible, opt-in
+            action — never automatic. */}
+        {hasRecipientCondition && (
+          <TrustedDomainsBar
+            count={trustedCount}
+            domains={trustedDomains}
+            onUse={onUseTrusted}
+            onRefresh={onRefreshTrusted}
+          />
+        )}
 
         {empty ? (
           <div className="pd-empty">
