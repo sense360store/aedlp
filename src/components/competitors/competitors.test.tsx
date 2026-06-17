@@ -46,6 +46,44 @@ describe("CompetitorFinder", () => {
     expect(screen.getByText(/extractor stay in your browser and are never sent/i)).toBeTruthy();
   });
 
+  it("expands an inline panel (not a modal dialog) and toggles via the trigger", () => {
+    render(<CompetitorFinder onAdd={() => {}} />);
+    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // It is an inline region, never a focus-trapping modal dialog.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("region", { name: /find competitor domains/i })).toBeTruthy();
+
+    // Clicking the trigger again collapses the panel.
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
+  });
+
+  it("collapses the panel on Escape", () => {
+    render(<CompetitorFinder onAdd={() => {}} />);
+    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    fireEvent.click(trigger);
+    expect(screen.getByText(/Only the company name and industry you type are sent/i)).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("collapses the panel via the visible Close button", () => {
+    render(<CompetitorFinder onAdd={() => {}} />);
+    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    fireEvent.click(trigger);
+    // The foot's "Close" is distinct from the header's "Close competitor finder".
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("renders suggestions with confidence and verified/unverified flags", async () => {
     fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
     render(<CompetitorFinder onAdd={() => {}} />);
@@ -81,7 +119,7 @@ describe("CompetitorFinder", () => {
 
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(onAdd).toHaveBeenCalledWith(["globex-industries.example"]);
-    // Modal closed after adding.
+    // Panel collapsed after adding.
     expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
   });
 
