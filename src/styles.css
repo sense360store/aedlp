@@ -316,8 +316,10 @@ code { font-family: var(--font-mono); }
 .scan-opt.on { background: var(--accent-weak); border-color: var(--accent-weak-border); color: var(--accent-text); font-weight: 640; }
 
 .pd-divider { height: 1px; background: var(--border); }
-.pd-cond-head { display: flex; align-items: center; gap: 10px; }
+.pd-cond-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pd-cond-head .section-label { flex: 1; }
+/* The competitor panel is a flex child of this header; order + a full
+   basis drop it onto its own line beneath the controls (see .cf-panel). */
 .logic-toggle { display: inline-flex; align-items: center; gap: 4px; }
 .logic-btn { font-size: 11px; font-weight: 650; padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--surface-2); color: var(--text-3); }
 .logic-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -498,18 +500,28 @@ code { font-family: var(--font-mono); }
 }
 
 /* ============================================================
-   Find-competitors modal (the one lookup surface)
-   Built from existing tokens — no new colours.
+   Find-competitors panel (the one lookup surface)
+   An inline, fully-opaque expanding panel inside the policy-draft
+   conditions area — not a modal. Built from existing tokens only.
+
+   It renders as a flex child of .pd-cond-head: order:1 + a full
+   flex-basis make it wrap onto its own line, full width, beneath the
+   header controls, leaving the policy draft visible. Outside a flex
+   parent (e.g. in tests) it simply falls back to a full-width block.
    ============================================================ */
-.cf-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
-  padding: 6vh 16px 16px; background: color-mix(in srgb, #0a0c10 55%, transparent); backdrop-filter: blur(2px); overflow: auto; }
-.cf-modal { width: 100%; max-width: 620px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow-md); display: flex; flex-direction: column; max-height: 88vh; }
-.cf-head { display: flex; align-items: flex-start; gap: 11px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
+.cf-trigger { flex-shrink: 0; }
+.cf-chev { opacity: .7; transition: transform .15s ease; }
+.cf-chev.open { transform: rotate(180deg); }
+.cf-panel { order: 1; flex: 1 0 100%; min-width: 0; margin-top: 2px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-md); display: flex; flex-direction: column; overflow: hidden; }
+.cf-head { display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; border-bottom: 1px solid var(--border);
+  background: var(--surface); }
 .cf-title-wrap { flex: 1; min-width: 0; }
-.cf-title { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 660; letter-spacing: -.01em; }
+.cf-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 660; letter-spacing: -.01em; }
+.cf-title svg { color: var(--accent); }
 .cf-sub { font-size: 11.5px; color: var(--text-3); margin-top: 3px; }
-.cf-body { padding: 15px 16px; display: flex; flex-direction: column; gap: 13px; overflow: auto; }
+.cf-body { padding: 14px 15px; display: flex; flex-direction: column; gap: 12px; }
 .cf-form { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
 .cf-field { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
 .cf-field.grow { flex: 1; min-width: 200px; }
@@ -520,7 +532,7 @@ code { font-family: var(--font-mono); }
 .cf-empty svg { opacity: .55; }
 .cf-empty-t { font-weight: 640; color: var(--text-2); font-size: 13px; }
 .cf-results-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.cf-results { display: flex; flex-direction: column; gap: 7px; }
+.cf-results { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; padding-right: 2px; }
 .cf-row { display: flex; gap: 11px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border);
   border-radius: var(--radius-sm); background: var(--surface-2); cursor: pointer; transition: border-color .12s, background .12s; }
 .cf-row:hover { border-color: var(--border-strong); }

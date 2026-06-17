@@ -79,6 +79,17 @@ describe("PolicyCreator page", () => {
     expect(verdict()).toContain("1/2");
   });
 
+  it("opens the competitor finder inline within the policy draft, not as an overlay", () => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+    // The lookup expands as an inline panel inside the policy draft and leaves
+    // it visible — it is not a viewport-covering modal overlay.
+    expect(container.querySelector(".policy-draft .cf-panel")).not.toBeNull();
+    expect(container.querySelector(".cf-overlay")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.querySelector(".policy-draft")).not.toBeNull();
+  });
+
   it("renders the persistent nav with both destinations, Policy Creator active", () => {
     renderPage();
     const toPolicy = screen.getByRole("link", { name: "Policy Creator" });
