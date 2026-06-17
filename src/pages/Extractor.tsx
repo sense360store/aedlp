@@ -391,14 +391,19 @@ export default function Extractor() {
                     onChange={(e) => setSearch(e.target.value)}
                   />
                   {search && (
-                    <button className="search-clear" onClick={() => setSearch("")}>
+                    <button className="search-clear" onClick={() => setSearch("")} aria-label="Clear search">
                       <Icon name="x" size={12} />
                     </button>
                   )}
                 </div>
                 <div className="filter-field">
                   <Icon name="funnel" size={13} className="muted" />
-                  <select className="filter-select" value={sort} onChange={(e) => setSort(e.target.value)}>
+                  <select
+                    className="filter-select"
+                    value={sort}
+                    onChange={(e) => setSort(e.target.value)}
+                    aria-label="Sort domains"
+                  >
                     <option value="count">Most frequent</option>
                     <option value="az">A → Z</option>
                   </select>
@@ -428,7 +433,11 @@ export default function Extractor() {
                     const on = !deselected.has(d.domain);
                     return (
                       <div key={d.domain} className={"dom-row" + (on ? "" : " off") + (d.manual ? " manual" : "")}>
-                        <button className={"chk" + (on ? " on" : "")} onClick={() => toggle(d.domain)}>
+                        <button
+                          className={"chk" + (on ? " on" : "")}
+                          onClick={() => toggle(d.domain)}
+                          aria-label={(on ? "Deselect " : "Select ") + d.domain}
+                        >
                           {on && <Icon name="check" size={12} />}
                         </button>
                         <span className="dom-name" title={d.domain}>
@@ -439,7 +448,12 @@ export default function Extractor() {
                         ) : (
                           <span className="dom-count">{d.count.toLocaleString()}×</span>
                         )}
-                        <button className="dom-x" title="Remove from list" onClick={() => removeDom(d.domain)}>
+                        <button
+                          className="dom-x"
+                          title="Remove from list"
+                          aria-label={"Remove " + d.domain + " from list"}
+                          onClick={() => removeDom(d.domain)}
+                        >
                           <Icon name="trash" size={14} />
                         </button>
                       </div>

@@ -198,7 +198,7 @@ function ConditionRow({ c, index, total, operator, onRemove, onToggleBoundary }:
                 : "copy"
             }
           />
-          <button className="icon-x" onClick={() => onRemove(c.id)} title="Remove">
+          <button className="icon-x" onClick={() => onRemove(c.id)} title="Remove" aria-label="Remove condition">
             <Icon name="trash" size={13} />
           </button>
         </div>
@@ -370,7 +370,12 @@ export function PolicyDraft({
                 </span>
               )}
             </div>
-            <select className="input pf-input" value={draft.action} onChange={(e) => set.action(e.target.value)}>
+            <select
+              className="input pf-input"
+              value={draft.action}
+              onChange={(e) => set.action(e.target.value)}
+              aria-label="Suggested action"
+            >
               {Object.entries(AEDLP_DATA.actions).map(([id, a]) => (
                 <option key={id} value={id}>
                   {a.label}

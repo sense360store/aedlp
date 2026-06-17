@@ -69,7 +69,12 @@ export function LibraryToolbar({
       <div className="filter-row">
         <div className="filter-field">
           <Icon name="funnel" size={13} className="muted" />
-          <select className="filter-select" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <select
+            className="filter-select"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            aria-label="Filter by category"
+          >
             <option value="all">All categories</option>
             {AEDLP_DATA.categories.map((c) => (
               <option key={c} value={c}>
@@ -80,7 +85,12 @@ export function LibraryToolbar({
         </div>
         <div className="filter-field">
           <Icon name="grid" size={13} className="muted" />
-          <select className="filter-select" value={region} onChange={(e) => setRegion(e.target.value)}>
+          <select
+            className="filter-select"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            aria-label="Filter by region"
+          >
             <option value="all">All regions</option>
             {AEDLP_DATA.regions.map((r) => (
               <option key={r} value={r}>
@@ -91,7 +101,12 @@ export function LibraryToolbar({
         </div>
         <div className="filter-field">
           <Icon name="building" size={13} className="muted" />
-          <select className="filter-select" value={industry} onChange={(e) => setIndustry(e.target.value)}>
+          <select
+            className="filter-select"
+            value={industry}
+            onChange={(e) => setIndustry(e.target.value)}
+            aria-label="Filter by industry"
+          >
             <option value="all">All industries</option>
             {AEDLP_DATA.industries.map((i) => (
               <option key={i} value={i}>

@@ -8,20 +8,23 @@ import "./styles.css";
 // Policy Creator's initial bundle stays small.
 const Extractor = lazy(() => import("./pages/Extractor"));
 
-const router = createBrowserRouter([
-  { path: "/", element: <PolicyCreator /> },
-  {
-    path: "/trusted-domain-extractor",
-    element: (
-      <Suspense fallback={null}>
-        <Extractor />
-      </Suspense>
-    ),
-  },
-]);
+const router = createBrowserRouter(
+  [
+    { path: "/", element: <PolicyCreator /> },
+    {
+      path: "/trusted-domain-extractor",
+      element: (
+        <Suspense fallback={null}>
+          <Extractor />
+        </Suspense>
+      ),
+    },
+  ],
+  { future: { v7_relativeSplatPath: true } },
+);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <RouterProvider router={router} future={{ v7_startTransition: true }} />
   </StrictMode>,
 );

@@ -24,7 +24,11 @@ export function CopyButton({ value, label = "Copy", big, className = "", icon = 
     }
   };
   return (
-    <button className={`copybtn ${big ? "big" : ""} ${copied ? "copied" : ""} ${className}`} onClick={onClick}>
+    <button
+      className={`copybtn ${big ? "big" : ""} ${copied ? "copied" : ""} ${className}`}
+      onClick={onClick}
+      aria-label={label ? undefined : "Copy"}
+    >
       <Icon name={copied ? "check" : icon} size={big ? 15 : 13} />
       {copied ? "Copied" : label}
     </button>

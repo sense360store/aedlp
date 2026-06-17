@@ -44,7 +44,7 @@ function CondResult({ c, sample }: { c: Condition; sample: string }) {
           </Badge>
         )}
         {(segs || (res.matchedKeywords && res.matchedKeywords.length)) && (
-          <button className="row-caret sm">
+          <button className="row-caret sm" aria-label="Toggle match details">
             <Icon name={open ? "chevronDown" : "chevron"} size={13} />
           </button>
         )}
