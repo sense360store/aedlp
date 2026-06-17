@@ -153,8 +153,8 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
             <div className="cf-body">
               {/* Permanent privacy note — must stay on this surface. */}
               <Callout tone="info" icon="info" title="What gets sent">
-                Only the company name you type is sent to the lookup service. Uploaded files and the extractor
-                stay in your browser and are never sent.
+                Only the company name and industry you type are sent to the lookup service, which uses Claude
+                with web search. Uploaded files and the extractor stay in your browser and are never sent.
               </Callout>
 
               <div className="cf-form">

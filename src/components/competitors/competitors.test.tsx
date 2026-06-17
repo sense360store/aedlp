@@ -42,7 +42,7 @@ describe("CompetitorFinder", () => {
   it("shows the permanent privacy note when opened", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
-    expect(screen.getByText(/Only the company name you type is sent/i)).toBeTruthy();
+    expect(screen.getByText(/Only the company name and industry you type are sent/i)).toBeTruthy();
     expect(screen.getByText(/extractor stay in your browser and are never sent/i)).toBeTruthy();
   });
 
@@ -82,7 +82,7 @@ describe("CompetitorFinder", () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(onAdd).toHaveBeenCalledWith(["globex-industries.example"]);
     // Modal closed after adding.
-    expect(screen.queryByText(/Only the company name you type is sent/i)).toBeNull();
+    expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
   });
 
   it("renders a plain message on 401", async () => {
