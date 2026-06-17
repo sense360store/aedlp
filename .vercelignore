@@ -1,0 +1,5 @@
+# Keep test files out of the deployment. Without this, Vercel would turn
+# api/competitors.test.ts into a public serverless route. Source test files
+# are never deployed anyway (they are not part of the dist build output).
+*.test.ts
+*.test.tsx

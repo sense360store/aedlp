@@ -496,3 +496,46 @@ code { font-family: var(--font-mono); }
   .topnav-link { padding: 7px 9px; }
   .topnav-link span { display: none; }
 }
+
+/* ============================================================
+   Find-competitors modal (the one lookup surface)
+   Built from existing tokens — no new colours.
+   ============================================================ */
+.cf-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
+  padding: 6vh 16px 16px; background: color-mix(in srgb, #0a0c10 55%, transparent); backdrop-filter: blur(2px); overflow: auto; }
+.cf-modal { width: 100%; max-width: 620px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-md); display: flex; flex-direction: column; max-height: 88vh; }
+.cf-head { display: flex; align-items: flex-start; gap: 11px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
+.cf-title-wrap { flex: 1; min-width: 0; }
+.cf-title { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 660; letter-spacing: -.01em; }
+.cf-sub { font-size: 11.5px; color: var(--text-3); margin-top: 3px; }
+.cf-body { padding: 15px 16px; display: flex; flex-direction: column; gap: 13px; overflow: auto; }
+.cf-form { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
+.cf-field { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
+.cf-field.grow { flex: 1; min-width: 200px; }
+.cf-label { font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+.cf-find { flex-shrink: 0; }
+.cf-loading { display: flex; align-items: center; gap: 11px; padding: 8px 2px; font-size: 12.5px; color: var(--text-2); }
+.cf-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 26px 18px; color: var(--text-3); }
+.cf-empty svg { opacity: .55; }
+.cf-empty-t { font-weight: 640; color: var(--text-2); font-size: 13px; }
+.cf-results-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cf-results { display: flex; flex-direction: column; gap: 7px; }
+.cf-row { display: flex; gap: 11px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-2); cursor: pointer; transition: border-color .12s, background .12s; }
+.cf-row:hover { border-color: var(--border-strong); }
+.cf-row.on { border-color: var(--accent-weak-border); background: var(--accent-weak); }
+.cf-check { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+.cf-row-main { min-width: 0; flex: 1; }
+.cf-row-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.cf-name { font-weight: 620; font-size: 13px; }
+.cf-domain { font-family: var(--font-mono); font-size: 12px; color: var(--amber-text); margin-top: 3px; word-break: break-all; }
+.cf-rationale { font-size: 11.5px; color: var(--text-3); margin-top: 4px; line-height: 1.45; }
+.cf-notes { font-size: 11.5px; color: var(--text-3); line-height: 1.5; padding: 2px; }
+.cf-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); }
+.cf-foot-actions { display: inline-flex; gap: 8px; }
+
+/* danger-toned callout (lookup error state) */
+.callout.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+.callout.danger .c-icon, .callout.danger .c-title { color: var(--danger); }

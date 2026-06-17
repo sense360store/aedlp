@@ -13,6 +13,7 @@ import { conditionCopyValue } from "../../lib/match";
 import { slugify } from "../../lib/suggest";
 import { AEDLP_DATA } from "../../data/library";
 import { TrustedDomainsBar } from "./TrustedDomainsBar";
+import { CompetitorFinder } from "../competitors/CompetitorFinder";
 import type { Condition, RecommendedAction } from "../../types";
 
 export type ScanKey = "body" | "subject" | "attachments";
@@ -287,6 +288,8 @@ export interface PolicyDraftProps {
   trustedDomains?: string[];
   onUseTrusted?: () => void;
   onRefreshTrusted?: () => void;
+  /** Curate looked-up competitor domains into a recipient-domain condition. */
+  onAddCompetitors?: (domains: string[]) => void;
 }
 
 export function PolicyDraft({
@@ -303,6 +306,7 @@ export function PolicyDraft({
   trustedDomains = [],
   onUseTrusted = () => {},
   onRefreshTrusted = () => {},
+  onAddCompetitors,
 }: PolicyDraftProps) {
   const empty = conditions.length === 0;
   const hasRecipientCondition = conditions.some((c) => c.conditionType === "recipient_domain");
@@ -414,6 +418,9 @@ export function PolicyDraft({
         {/* conditions */}
         <div className="pd-cond-head">
           <span className="section-label">Conditions ({conditions.length})</span>
+          {onAddCompetitors && (
+            <CompetitorFinder onAdd={onAddCompetitors} triggerClassName="btn xs ghost" />
+          )}
           {conditions.length > 1 && (
             <div className="logic-toggle">
               <span className="muted small">Match</span>
