@@ -4,13 +4,14 @@ import type { ConditionType } from "../types";
 
 /**
  * Library count guard: the prototype data.js ported 71 detectors; Phase 1
- * adds 22 regex detectors (UK, EU core, US) for a total of 93. This pins the
- * count and condition-type coverage so a later edit cannot silently drop or
- * duplicate a detector.
+ * adds 22 regex detectors (UK, EU core, US) and Phase 2 adds 10 more
+ * (Aerospace, Defence & Export Control: 4 regex, 4 keyword, 2 keyword_pattern)
+ * for a total of 103. This pins the count and condition-type coverage so a
+ * later edit cannot silently drop or duplicate a detector.
  */
 describe("AEDLP_DATA library (prototype parity)", () => {
-  it("holds the prototype set plus the Phase 1 expansion (93 detectors)", () => {
-    expect(AEDLP_DATA.detectors).toHaveLength(93);
+  it("holds the prototype set plus the Phase 1 and Phase 2 expansions (103 detectors)", () => {
+    expect(AEDLP_DATA.detectors).toHaveLength(103);
   });
 
   it("covers all five condition types", () => {
@@ -30,9 +31,9 @@ describe("AEDLP_DATA library (prototype parity)", () => {
       counts[d.conditionType] = (counts[d.conditionType] || 0) + 1;
     }
     expect(counts).toEqual({
-      regular_expression: 55,
-      keyword: 11,
-      keyword_pattern: 7,
+      regular_expression: 59,
+      keyword: 15,
+      keyword_pattern: 9,
       recipient_domain: 3,
       file_extension: 17,
     });

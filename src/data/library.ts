@@ -545,6 +545,171 @@ export const phase1Detectors: RegexDetector[] = [
     notes: ["Nine-character issuer-plus-issue-plus-check shape; check digit not validated here. Pair with CUSIP context."] },
 ];
 
+/* ---------------- Phase 2 expansion: Aerospace, Defence & Export Control ---------------- */
+/* ============================================================
+   AEDLP Policy Creator — library expansion, Phase 2
+   Aerospace, Defence and Export Control. Example detectors only.
+
+   What these are: detectors for the PUBLIC markings and identifiers that
+   organisations stamp on controlled material (ITAR/EAR/CUI banners,
+   DoD distribution statements, ECCN classification labels, CAGE and NATO
+   stock identifiers, UK export-control terms). They flag the labels, not any
+   controlled technical content. No controlled data is contained here.
+
+   IMPORTANT, same standing rules as Phase 1:
+   - Format-only patterns for the in-browser tester. Browser RegExp is not the
+     AEDLP engine. CAGE, NSN, ECCN have no checksum or list-membership check
+     here; AEDLP validates against the real lists. Confirm in the AEDLP tester.
+   - falsePositiveRisk is set honestly; the structural-ID regexes are broad.
+   - Field shapes match the handoff helpers exactly:
+       rx  -> regular_expression: id, displayName, aliases, description, country,
+              regionLabel, category, regex, contextKeywords, positiveExamples,
+              negativeExamples, recommendedAction, falsePositiveRisk, notes
+       kw  -> keyword: ...as rx but keywords[] instead of regex; matchMode
+              { caseInsensitive:true, wholeWord:true }; optional industry
+       kp  -> keyword_pattern: ...groups[[...],[...]], operator, proximity;
+              matchMode { caseInsensitive:true, wholeWord:true }; optional industry
+   - Several carry industry "Aerospace & defense". The wire-in PR must add that
+     industry to the taxonomy so the filter shows it.
+   ============================================================ */
+
+/* ---------------- structural identifiers (regex) ---------------- */
+export const phase2Regex: RegexDetector[] = [
+  { id: "us-cage-code", displayName: "CAGE / NCAGE Code", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["cage code", "ncage", "commercial and government entity code", "supplier code"],
+    description: "5-character Commercial and Government Entity (CAGE) code, format only.",
+    country: "US", regionLabel: "United States", category: "Government ID",
+    regex: "\\b\\d[A-HJ-NP-Z0-9]{3}\\d\\b",
+    contextKeywords: ["CAGE", "CAGE code", "NCAGE", "commercial and government entity", "supplier code"],
+    positiveExamples: ["CAGE code 1ABC2", "Supplier CAGE: 81205"],
+    negativeExamples: ["Reference ABCDE", "Lot AB12"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["First and last characters are digits, middle three are alphanumeric excluding I and O. Broad; pair with CAGE context. Membership in the real CAGE registry is not checked here."] },
+
+  { id: "nato-stock-number", displayName: "NATO Stock Number (NSN)", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["nsn", "nato stock number", "national stock number"],
+    description: "13-digit NATO Stock Number in 4-2-3-4 grouping, format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Government ID",
+    regex: "\\b\\d{4}-\\d{2}-\\d{3}-\\d{4}\\b",
+    contextKeywords: ["NSN", "NATO stock number", "national stock number", "stock number"],
+    positiveExamples: ["NSN 5340-01-234-5678", "Part NSN: 1005-00-123-4567"],
+    negativeExamples: ["Order 5340-01-234", "Date 2024-01-23"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["The dashed 4-2-3-4 shape is distinctive; undashed 13-digit NSNs are not matched here."] },
+
+  { id: "eccn-classification", displayName: "ECCN Classification Number", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["eccn", "export control classification number", "commerce control list"],
+    description: "Export Control Classification Number (e.g. 3A001), format only.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    regex: "\\b[0-9][A-E]\\d{3}\\b",
+    contextKeywords: ["ECCN", "export control classification", "commerce control list", "CCL", "dual-use"],
+    positiveExamples: ["ECCN 3A001 applies", "Classified 5A002 under the CCL"],
+    negativeExamples: ["Room 3A", "Model A1234"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Category digit plus product group letter (A-E) plus three digits. Suffixes like .a.1 are not matched. Confirm against the live CCL in AEDLP."] },
+
+  { id: "dod-distribution-statement", displayName: "DoD Distribution Statement", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["distribution statement", "distribution a", "distribution statement b", "dod marking"],
+    description: "US DoD distribution statement marking (A through F), format only.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    regex: "\\bDISTRIBUTION\\s+STATEMENT\\s+[A-F]\\b",
+    contextKeywords: ["distribution statement", "further dissemination", "DoD", "controlled"],
+    positiveExamples: ["DISTRIBUTION STATEMENT C: U.S. Government agencies only.", "Marked DISTRIBUTION STATEMENT D"],
+    negativeExamples: ["Distribution list attached.", "Statement of work follows."],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: ["Matches the banner A-F. Statements B-F indicate restricted dissemination."] },
+];
+
+/* ---------------- export-control marking terms (keyword) ---------------- */
+export const phase2Keywords: KeywordDetector[] = [
+  { id: "kw-itar-controlled", displayName: "ITAR — Controlled Material Markings", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["itar", "itar controlled", "usml", "munitions list", "defense article"],
+    description: "International Traffic in Arms Regulations marking and reference terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["ITAR", "ITAR controlled", "ITAR-controlled", "International Traffic in Arms", "USML", "United States Munitions List", "defense article", "defense service", "22 CFR 120", "22 CFR 121"],
+    positiveExamples: ["This drawing is ITAR controlled and listed under USML Category VIII."],
+    negativeExamples: ["The marketing brochure is cleared for public release."],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: ["Whole-word matching so 'itar' substrings do not over-trigger. ITAR data warrants strict handling."] },
+
+  { id: "kw-ear-export", displayName: "EAR — Export Administration Markings", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["ear", "ear99", "dual-use", "commerce control list", "deemed export"],
+    description: "Export Administration Regulations marking and reference terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["EAR", "EAR99", "Export Administration Regulations", "dual-use", "Commerce Control List", "CCL", "15 CFR", "deemed export", "export controlled"],
+    positiveExamples: ["Classified EAR99; deemed export rules apply to foreign nationals."],
+    negativeExamples: ["The annual report is publicly filed."],
+    recommendedAction: "warn_require_justification", falsePositiveRisk: "medium",
+    notes: ["'EAR' is short; whole-word matching reduces noise. Pair with export context where possible."] },
+
+  { id: "kw-cui-markings", displayName: "CUI — Controlled Unclassified Information", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["cui", "controlled unclassified information", "noforn", "fouo"],
+    description: "US CUI banner and dissemination control terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["CUI", "CONTROLLED UNCLASSIFIED INFORMATION", "Controlled Unclassified Information", "CUI//SP-", "NOFORN", "FED ONLY", "FEDCON", "For Official Use Only", "FOUO"],
+    positiveExamples: ["CUI//SP-CTI: Controlled Unclassified Information, NOFORN."],
+    negativeExamples: ["This newsletter is for general distribution."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Overlaps general classification markings; this set is defence and CUI specific."] },
+
+  { id: "kw-uk-export-control", displayName: "UK Strategic Export Control Terms", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["ogel", "siel", "spire", "export licence", "ecju", "strategic export"],
+    description: "UK strategic export control licence and process terms.",
+    country: "GB", regionLabel: "United Kingdom", category: "Confidential business data",
+    keywords: ["OGEL", "SIEL", "SPIRE", "export licence", "ECJU", "strategic export", "controlled goods", "dual-use", "end-user undertaking"],
+    positiveExamples: ["These goods require a SIEL; submit via SPIRE to the ECJU."],
+    negativeExamples: ["The travel policy has been updated."],
+    recommendedAction: "warn_require_justification", falsePositiveRisk: "low",
+    notes: ["UK regime terms (ECJU, SPIRE, OGEL, SIEL). Complements the US ITAR and EAR sets."] },
+];
+
+/* ---------------- proximity patterns (keyword_pattern) ---------------- */
+export const phase2KeywordPatterns: KeywordPatternDetector[] = [
+  { id: "kp-export-controlled-technical-data", displayName: "Export-Controlled Technical Data", conditionType: "keyword_pattern",
+    industry: "Aerospace & defense",
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["controlled technical data", "tdp leak", "itar drawing", "export controlled drawing"],
+    description: "Technical-data terms occurring close to export-control terms.",
+    country: "GLOBAL", regionLabel: "Global", category: "Confidential business data",
+    groups: [["technical data", "drawing", "specification", "schematic", "source code", "blueprint", "technical data package", "TDP"], ["ITAR", "EAR", "EAR99", "ECCN", "export controlled", "USML", "controlled", "dual-use"]],
+    operator: "AND", proximity: 15,
+    positiveExamples: ["The attached technical data package is ITAR controlled."],
+    negativeExamples: ["The drawing competition winners are announced.", "Our export sales grew this quarter."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Both a technical-data term and a control term must appear within the proximity window, which cuts unrelated single-word hits."] },
+
+  { id: "kp-classified-program-leak", displayName: "Classified Defence Programme Indicators", conditionType: "keyword_pattern",
+    industry: "Aerospace & defense",
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["classified program", "defense contract leak", "program classification"],
+    description: "Programme or contract terms occurring close to classification terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    groups: [["program", "programme", "contract", "milestone", "deliverable", "proposal"], ["SECRET", "TOP SECRET", "classified", "NOFORN", "CUI", "SAP", "special access"]],
+    operator: "AND", proximity: 12,
+    positiveExamples: ["The program deliverable is classified SECRET, NOFORN."],
+    negativeExamples: ["The training program is open to all staff.", "The contract was signed publicly."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Proximity reduces matches where a benign 'program' sits far from a classification term."] },
+];
+
+export const phase2Detectors = [
+  ...phase2Regex,
+  ...phase2Keywords,
+  ...phase2KeywordPatterns,
+];
+
 /* ---------------- keyword sets (industry term lists) ---------------- */
 const kw = (o: KwInput): KeywordDetector => ({
   conditionType: "keyword",
@@ -913,9 +1078,12 @@ const fileExtensionDetectors = [
 const detectors: Detector[] = [
   ...regexDetectors,
   ...phase1Detectors,
+  ...phase2Regex,
   ...keywordDetectors,
   ...transportDetectors,
+  ...phase2Keywords,
   ...keywordPatterns,
+  ...phase2KeywordPatterns,
   ...recipientDetectors,
   ...fileExtensionDetectors,
 ];
@@ -939,8 +1107,8 @@ const categories = [
 const industries = [
   "Cross-industry", "Financial services", "Insurance", "Healthcare & life sciences",
   "Technology & SaaS", "Legal & professional services", "Manufacturing & engineering",
-  "Transportation & logistics", "Retail & e-commerce", "Energy & utilities",
-  "Public sector", "Education"
+  "Aerospace & defense", "Transportation & logistics", "Retail & e-commerce",
+  "Energy & utilities", "Public sector", "Education"
 ];
 const catIndustry: Record<string, string[]> = {
   "Government ID": ["Cross-industry", "Public sector"],
@@ -965,6 +1133,7 @@ const industryAlias: Record<string, string[]> = {
   "Mergers & acquisitions": ["Financial services", "Legal & professional services"],
   "Human resources": ["Cross-industry"],
   "Manufacturing & engineering": ["Manufacturing & engineering"],
+  "Aerospace & defense": ["Aerospace & defense"],
   "Public sector": ["Public sector"],
   "Data protection": ["Cross-industry"],
   "Cross-industry": ["Cross-industry"],
