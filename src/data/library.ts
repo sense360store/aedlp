@@ -876,6 +876,57 @@ const rcp = (o: RcpInput): RecipientDomainDetector => ({
   matchMode: { caseInsensitive: true, wholeWord: true },
   ...o,
 });
+/* Industry competitor / peer domain packs (batch 1).
+   INDUSTRY starting lists of the major players in a sector — not customer
+   specific. Intended flow: suggest -> review -> curate -> add; never drop one
+   straight into a live blocking policy. Before deploying, the user removes
+   their own organisation's domains and adds the rivals that matter to that
+   customer. This is recipient-domain matching, so it flags mail SENT TO these
+   domains. These are real, primary corporate domains (not .example) by design;
+   the placeholder rcp-competitors below keeps the reserved .example "build your
+   own" generic. Rebranded / abbreviated domains (rtx.com, gd.com, gs.com,
+   db.com, sc.com) were verified against the companies' own sites; the mandatory
+   curate step is the backstop for any that have since changed. Domain lists are
+   the vetted source of truth — do not alter them. */
+export const competitorPacks: RecipientDomainDetector[] = [
+  rcp({ id: "rcp-competitors-aerospace", displayName: "Competitor Domains — Aerospace & Defence",
+    aliases: ["aerospace competitors", "defence competitors", "defense primes", "a&d rivals"],
+    description: "Recipient address on a major aerospace or defence company domain. Industry starting list, curate before use.",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Aerospace & defense",
+    domains: [
+      "boeing.com", "airbus.com", "lockheedmartin.com", "rtx.com", "northropgrumman.com",
+      "gd.com", "gdit.com", "baesystems.com", "leonardo.com", "thalesgroup.com",
+      "saab.com", "rolls-royce.com", "safran-group.com", "l3harris.com", "leidos.com",
+      "geaerospace.com", "embraer.com", "dassault-aviation.com", "bombardier.com",
+      "rheinmetall.com", "elbitsystems.com", "collinsaerospace.com", "prattwhitney.com",
+      "honeywell.com", "textron.com"
+    ],
+    positiveExamples: ["Sending the design package to buyer@boeing.com", "Forwarded the proposal to contact@airbus.com"],
+    negativeExamples: ["Send to client@our-supplier.com"],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: [
+      "Industry starting list. Remove your own organisation and add the specific rivals that matter to the customer before deploying.",
+      "Primary corporate domains only; large primes use many subsidiary and country domains not all listed here."
+    ] }),
+  rcp({ id: "rcp-competitors-financial", displayName: "Competitor Domains — Financial Services",
+    aliases: ["bank competitors", "financial services rivals", "fs competitors", "investment bank domains"],
+    description: "Recipient address on a major bank or asset manager domain. Industry starting list, curate before use.",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Financial services",
+    domains: [
+      "jpmorgan.com", "jpmorganchase.com", "chase.com", "bankofamerica.com", "citi.com",
+      "wellsfargo.com", "gs.com", "morganstanley.com", "hsbc.com", "barclays.com",
+      "lloydsbanking.com", "natwest.com", "santander.com", "db.com", "bnpparibas.com",
+      "ubs.com", "sc.com", "socgen.com", "credit-agricole.com", "blackrock.com",
+      "schroders.com", "schwab.com"
+    ],
+    positiveExamples: ["Sending the deck to analyst@gs.com", "Replied to banker@jpmorgan.com"],
+    negativeExamples: ["Send to client@portfolio-partner.com"],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: [
+      "Industry starting list. Remove your own organisation and add the specific rivals that matter to the customer before deploying.",
+      "Banks use many brand, retail and country domains (for example .co.uk and regional variants) not all listed here; confirm coverage for the customer."
+    ] }),
+];
 const recipientDetectors = [
   rcp({ id: "rcp-freemail", displayName: "Personal Webmail / Freemail Domains",
     aliases: ["freemail", "personal email", "webmail", "gmail", "yahoo", "hotmail", "outlook.com", "personal account", "consumer email"],
@@ -903,7 +954,8 @@ const recipientDetectors = [
     positiveExamples: ["Sending the roadmap to contact@globex-industries.example"],
     negativeExamples: ["Send to client@trusted-partner.com"],
     recommendedAction: "block", falsePositiveRisk: "low",
-    notes: ["Placeholder domains use the reserved .example TLD \u2014 swap in your live competitor list before deploying."] })
+    notes: ["Placeholder domains use the reserved .example TLD \u2014 swap in your live competitor list before deploying."] }),
+  ...competitorPacks,
 ];
 
 /* ---------------- file type / extension detectors ---------------- */
