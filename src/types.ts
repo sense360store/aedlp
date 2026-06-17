@@ -105,14 +105,23 @@ export type Detector =
   | RecipientDomainDetector
   | FileExtensionDetector;
 
+/** Runtime-only fields a detector gains once added to the policy draft. */
+export interface ConditionExtras {
+  boundary?: BoundaryStrategyId;
+  _effectiveRegex?: string;
+}
+
 /**
  * A detector added to the policy draft. Regex conditions carry a boundary
  * choice and the effective (boundary-wrapped) regex, per the prototype.
+ * Distributed over the union so `conditionType` still narrows the variant.
  */
-export type Condition = Detector & {
-  boundary?: BoundaryStrategyId;
-  _effectiveRegex?: string;
-};
+export type Condition =
+  | (RegexDetector & ConditionExtras)
+  | (KeywordDetector & ConditionExtras)
+  | (KeywordPatternDetector & ConditionExtras)
+  | (RecipientDomainDetector & ConditionExtras)
+  | (FileExtensionDetector & ConditionExtras);
 
 /* ---------------- metadata blocks ---------------- */
 
