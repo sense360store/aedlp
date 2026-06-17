@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { useMemo, useState } from "react";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react";
 import { AEDLP_DATA } from "../../data/library";
 import { filterDetectors } from "../../lib/search";
 import { LibraryPanel, type LibraryFilters } from "./LibraryPanel";
@@ -62,10 +62,10 @@ const det = (id: string) => byId.get(id)!;
 describe("LibraryPanel filtering", () => {
   it("renders all detectors with the right total and per-type tab counts", () => {
     const { container } = render(<Harness />);
-    expect(container.querySelector(".lib-count")?.textContent).toContain("103 of 103 detectors");
+    expect(container.querySelector(".lib-count")?.textContent).toContain("105 of 105 detectors");
     const tabs = Array.from(container.querySelectorAll(".type-tab")).map((t) => t.textContent);
     expect(tabs).toEqual(
-      expect.arrayContaining(["All103", "Regex59", "Keywords15", "Pattern9", "Recipients3", "File types17"]),
+      expect.arrayContaining(["All105", "Regex59", "Keywords15", "Pattern9", "Recipients5", "File types17"]),
     );
   });
 
@@ -81,7 +81,7 @@ describe("LibraryPanel filtering", () => {
   it("filters by type tab", () => {
     const { container } = render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: /Keywords/ }));
-    expect(container.querySelector(".lib-count")?.textContent).toContain("15 of 103 detectors");
+    expect(container.querySelector(".lib-count")?.textContent).toContain("15 of 105 detectors");
     expect(container.querySelectorAll(".lib-row")).toHaveLength(15);
   });
 
@@ -93,7 +93,7 @@ describe("LibraryPanel filtering", () => {
     expect(screen.getByText("Clear filters")).toBeTruthy();
     fireEvent.click(screen.getByText("Clear filters"));
     expect(screen.queryByText("Clear filters")).toBeNull();
-    expect(container.querySelector(".lib-count")?.textContent).toContain("103 of 103 detectors");
+    expect(container.querySelector(".lib-count")?.textContent).toContain("105 of 105 detectors");
   });
 
   it("renders the empty state when nothing matches", () => {
@@ -121,6 +121,32 @@ describe("LibraryRow previews and expansion", () => {
     expect(rcp.container.querySelector(".prev-chip.mono")).not.toBeNull();
     const fe = render(<LibraryRow d={det("fe-archives")} added={false} onToggle={() => {}} onTest={() => {}} />);
     expect(fe.container.querySelector(".prev-chip.ext")).not.toBeNull();
+  });
+
+  it("renders a competitor pack like a recipient detector: chips, inspector, copy value, curate note", async () => {
+    const d = det("rcp-competitors-aerospace");
+    const { container } = render(<LibraryRow d={d} added={false} onToggle={() => {}} onTest={() => {}} />);
+
+    // Collapsed preview shows mono domain chips led by the first domain.
+    expect(container.querySelector(".prev-chip.mono")?.textContent).toBe("boeing.com");
+
+    // Expand to the inspector: all 25 domains render (under the 48 cap) with the count.
+    fireEvent.click(container.querySelector(".lib-row-main")!);
+    const insp = container.querySelector(".inspector") as HTMLElement;
+    expect(insp).not.toBeNull();
+    expect(insp.querySelectorAll(".prev-chip.mono")).toHaveLength(25);
+    expect(insp.textContent).toContain("match any (25)");
+
+    // The curate-before-deploy steer is visible so the user curates first.
+    expect(insp.textContent).toContain("Remove your own organisation");
+
+    // Copy value mirrors the other recipient detectors: the full domain list.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    const expected = d.conditionType === "recipient_domain" ? d.domains.join("\n") : "";
+    fireEvent.click(within(insp).getByRole("button", { name: "Copy list" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expected));
   });
 
   it("renders a serialized keyword_pattern preview", () => {
