@@ -89,11 +89,15 @@ code { font-family: var(--font-mono); }
 .main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 18px;
   padding: 18px 20px 56px; max-width: 1560px; width: 100%; margin: 0 auto; align-items: start; }
 .col-lib { min-width: 0; }
+/* The right column is sticky and viewport-height-capped. It scrolls its own
+   overflow (overflow-y:auto) so anything tall inside it — notably the open
+   Find-competitors panel — stays reachable instead of spilling below the fold. */
 .col-policy { display: flex; flex-direction: column; gap: 16px; position: sticky; top: 72px;
-  max-height: calc(100vh - 88px); overflow: visible; min-width: 0; }
+  max-height: calc(100vh - 88px); overflow-y: auto; min-width: 0; }
 @media (max-width: 1120px) {
   .main { grid-template-columns: 1fr; }
-  .col-policy { position: static; max-height: none; }
+  /* Stacked layout: the column flows with the page, so drop the cap and scroll. */
+  .col-policy { position: static; max-height: none; overflow: visible; }
 }
 
 /* ---------------- shared primitives ---------------- */
@@ -508,20 +512,28 @@ code { font-family: var(--font-mono); }
    flex-basis make it wrap onto its own line, full width, beneath the
    header controls, leaving the policy draft visible. Outside a flex
    parent (e.g. in tests) it simply falls back to a full-width block.
+
+   Containment: the panel is viewport-bounded (max-height) and owns its
+   scroll. The head and foot are pinned (flex-shrink:0) while .cf-body is the
+   single internal scroll region, so the inputs, the Find button, the results
+   and the privacy note stay reachable however many results come back — and the
+   foot's Add control is never pushed off-screen. Paired with .col-policy's own
+   overflow-y:auto, the in-flow panel is never clipped by the column's cap.
    ============================================================ */
 .cf-trigger { flex-shrink: 0; }
 .cf-chev { opacity: .7; transition: transform .15s ease; }
 .cf-chev.open { transform: rotate(180deg); }
-.cf-panel { order: 1; flex: 1 0 100%; min-width: 0; margin-top: 2px;
+.cf-panel { order: 1; flex: 1 0 100%; min-width: 0; margin-top: 2px; max-height: calc(100vh - 120px);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
   box-shadow: var(--shadow-md); display: flex; flex-direction: column; overflow: hidden; }
 .cf-head { display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; border-bottom: 1px solid var(--border);
-  background: var(--surface); }
+  background: var(--surface); flex-shrink: 0; }
 .cf-title-wrap { flex: 1; min-width: 0; }
 .cf-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 660; letter-spacing: -.01em; }
 .cf-title svg { color: var(--accent); }
 .cf-sub { font-size: 11.5px; color: var(--text-3); margin-top: 3px; }
-.cf-body { padding: 14px 15px; display: flex; flex-direction: column; gap: 12px; }
+.cf-body { padding: 14px 15px; display: flex; flex-direction: column; gap: 12px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .cf-form { display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap; }
 .cf-field { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
 .cf-field.grow { flex: 1; min-width: 200px; }
@@ -544,7 +556,7 @@ code { font-family: var(--font-mono); }
 .cf-domain { font-family: var(--font-mono); font-size: 12px; color: var(--amber-text); margin-top: 3px; word-break: break-all; }
 .cf-rationale { font-size: 11.5px; color: var(--text-3); margin-top: 4px; line-height: 1.45; }
 .cf-notes { font-size: 11.5px; color: var(--text-3); line-height: 1.5; padding: 2px; }
-.cf-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+.cf-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; flex-shrink: 0;
   padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); }
 .cf-foot-actions { display: inline-flex; gap: 8px; }
 

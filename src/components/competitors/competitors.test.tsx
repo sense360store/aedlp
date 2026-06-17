@@ -84,6 +84,54 @@ describe("CompetitorFinder", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("structures the panel as a pinned head/foot with a single scrolling body", () => {
+    const { container } = render(<CompetitorFinder onAdd={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+
+    const panel = container.querySelector(".cf-panel") as HTMLElement;
+    const head = container.querySelector(".cf-head") as HTMLElement;
+    const body = container.querySelector(".cf-body") as HTMLElement;
+    const foot = container.querySelector(".cf-foot") as HTMLElement;
+    expect(panel).toBeTruthy();
+
+    // Head, body and foot are direct children of the panel: the head and foot
+    // stay pinned while .cf-body is the one element that scrolls. That is what
+    // keeps every control reachable inside the viewport-bounded panel.
+    expect(head?.parentElement).toBe(panel);
+    expect(body?.parentElement).toBe(panel);
+    expect(foot?.parentElement).toBe(panel);
+
+    // The inputs and the privacy note live inside the scrollable body.
+    expect(body.querySelector("input")).toBeTruthy();
+    expect(body.textContent).toMatch(/Only the company name and industry you type are sent/i);
+
+    // The Add control is pinned in the foot, never inside the scrolling body,
+    // so a long results list can never push it off-screen.
+    const addBtn = screen.getByRole("button", { name: /to policy/i });
+    expect(foot.contains(addBtn)).toBe(true);
+    expect(body.contains(addBtn)).toBe(false);
+  });
+
+  it("keeps the results list in its own capped scroll region within the body", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
+    const { container } = render(<CompetitorFinder onAdd={() => {}} />);
+    openAndSearch();
+    await waitFor(() => expect(screen.getByText("globex-industries.example")).toBeTruthy());
+
+    const body = container.querySelector(".cf-body") as HTMLElement;
+    const results = container.querySelector(".cf-results") as HTMLElement;
+    expect(results).toBeTruthy();
+
+    // The results scroll within the body (their own region) and hold every
+    // suggestion row — the cap is via scroll, not truncation.
+    expect(body.contains(results)).toBe(true);
+    expect(results.querySelectorAll(".cf-row").length).toBe(SAMPLE.suggestions.length);
+
+    // The footer Add control sits outside the results scroll region.
+    const addBtn = screen.getByRole("button", { name: /to policy/i });
+    expect(results.contains(addBtn)).toBe(false);
+  });
+
   it("renders suggestions with confidence and verified/unverified flags", async () => {
     fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
     render(<CompetitorFinder onAdd={() => {}} />);
