@@ -4,7 +4,7 @@
    Topbar mirrors the prototype extractor.jsx Topbar.
    ============================================================ */
 import { Link } from "react-router-dom";
-import { Icon } from "../components/Icon";
+import { Icon } from "../components/ui/Icon";
 import { useTheme } from "../theme";
 
 export default function Extractor() {
