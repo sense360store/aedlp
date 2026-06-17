@@ -56,11 +56,16 @@ export interface CompetitorsResponse {
 
 /* ---------------- tunables ---------------- */
 
-// Lookup model. This is a shallow "search a little, extract domains" task, so we
-// default to the fast, cheap Haiku tier to stay well inside the time budget. Swap
-// to "claude-sonnet-4-6" if you need deeper research and can spend the latency —
-// it's the only line you need to change.
-const MODEL = "claude-haiku-4-5";
+// Lookup model. We call the web_search_20260209 tool below, whose built-in
+// dynamic filtering (the model writes and runs code to trim search results
+// before they reach the context) is only supported on Sonnet 4.6, Opus 4.6+
+// and Fable 5 — NOT on the Haiku tier. Pairing that tool version with a Haiku
+// model is rejected up front with a 400, which is what was surfacing as an
+// instant 502. Sonnet 4.6 supports the tool and still returns well inside the
+// time budget. (If you ever move back to a Haiku model, you MUST also drop the
+// tool down to the basic "web_search_20250305" version, which has no dynamic
+// filtering and works on every model.)
+const MODEL = "claude-sonnet-4-6";
 
 const MAX_COMPETITORS = 12; // cap how many suggestions we ask for / return
 const MAX_OUTPUT_TOKENS = 1536; // modest output cap — enough for ~12 compact rows
@@ -426,6 +431,47 @@ function send(res: VercelResponse, status: number, body: unknown): void {
   res.status(status).json(body);
 }
 
+/**
+ * Log the real cause of a failed lookup to the function logs. The browser only
+ * ever sees the generic message from the handler's catch, so this is what makes
+ * the next failure debuggable. Anthropic SDK errors (`APIError`) carry the HTTP
+ * status, the API error `type`, and the structured response body that names the
+ * rejected model / tool / parameter — exactly what we need to tell an invalid
+ * model id from an unknown tool type. An aborted request (our internal deadline)
+ * is surfaced distinctly. The `typeof` guards keep this safe when the SDK's
+ * static error classes aren't present (e.g. under a unit-test mock).
+ */
+function logLookupError(err: unknown): void {
+  // Our own deadline aborts the in-flight request; APIUserAbortError extends
+  // APIError, so check the abort case before the general API-error case.
+  const isAbort =
+    (err instanceof Error && err.name === "AbortError") ||
+    (typeof Anthropic.APIUserAbortError === "function" && err instanceof Anthropic.APIUserAbortError);
+  if (isAbort) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[competitors] lookup aborted (internal deadline fired): ${message}`);
+    return;
+  }
+  if (typeof Anthropic.APIError === "function" && err instanceof Anthropic.APIError) {
+    let body: string;
+    try {
+      body = JSON.stringify(err.error);
+    } catch {
+      body = String(err.error);
+    }
+    console.error(
+      `[competitors] Anthropic APIError name=${err.name} status=${String(err.status)} ` +
+        `type=${String(err.type)} message=${err.message} body=${body}`,
+    );
+    return;
+  }
+  if (err instanceof Error) {
+    console.error(`[competitors] lookup failed name=${err.name} message=${err.message}`);
+    return;
+  }
+  console.error(`[competitors] lookup failed with a non-Error value: ${String(err)}`);
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   // 1. Method.
   if (req.method !== "POST") {
@@ -470,11 +516,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   // call; we then return a clean partial response instead of a Vercel 504.
   const startedAt = Date.now();
   const controller = new AbortController();
-  const deadlineTimer = setTimeout(() => controller.abort(), OVERALL_BUDGET_MS);
+  // The abort must fire near the budget, never at ~0: a zero/negative/garbled
+  // OVERALL_BUDGET_MS would otherwise cancel the Claude call on the same tick it
+  // starts (an instant, mysterious failure). Clamp to a sane positive delay.
+  const abortAfterMs =
+    Number.isFinite(OVERALL_BUDGET_MS) && OVERALL_BUDGET_MS > 0 ? OVERALL_BUDGET_MS : 45_000;
+  const deadlineTimer = setTimeout(() => controller.abort(), abortAfterMs);
   try {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     // Reserve time for verification + sending the response before the hard deadline.
-    const researchDeadlineAt = startedAt + (OVERALL_BUDGET_MS - VERIFY_BUDGET_MS - RESPONSE_RESERVE_MS);
+    // Floor the research window at 1s so an elapsed/too-small budget can never make
+    // the lookup bail before it has issued a single request.
+    const researchDeadlineAt =
+      startedAt + Math.max(1_000, abortAfterMs - VERIFY_BUDGET_MS - RESPONSE_RESERVE_MS);
 
     let raw: RawSuggestion[] = [];
     let timedOut = false;
@@ -499,7 +553,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     // Verify with whatever time is left; never push past the deadline.
     const verifyStart = Date.now();
-    const remaining = OVERALL_BUDGET_MS - (Date.now() - startedAt) - RESPONSE_RESERVE_MS;
+    const remaining = abortAfterMs - (Date.now() - startedAt) - RESPONSE_RESERVE_MS;
     const verifyBudget = controller.signal.aborted ? 0 : Math.min(VERIFY_BUDGET_MS, Math.max(0, remaining));
     const suggestions = await verifySuggestions(raw, verifyBudget);
     const verifyMs = Date.now() - verifyStart;
@@ -517,8 +571,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       notes: buildNotes(suggestions, verifiedCount, timedOut),
     };
     return send(res, 200, payload);
-  } catch {
-    // Never leak the request or key in errors.
+  } catch (err) {
+    // Log the real cause to the function logs; the browser only ever sees the
+    // generic message, and we never leak the request or the API key.
+    logLookupError(err);
     return send(res, 502, { error: "The competitor lookup failed. Please try again." });
   } finally {
     clearTimeout(deadlineTimer);
