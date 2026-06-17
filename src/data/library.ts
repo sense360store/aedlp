@@ -272,6 +272,279 @@ const regexDetectors = [
     recommendedAction: "silently_track", falsePositiveRisk: "high", notes: ["17-char alphanumerics also appear in other IDs — pair with VIN context keywords."] })
 ];
 
+/* ---------------- Phase 1 expansion: UK, EU core, US (regex detectors) ---------------- */
+/* ============================================================
+   AEDLP Policy Creator — library expansion, Phase 1 (UK, EU core, US)
+   Example / starting-point detectors. Safe example values only, no real PII.
+
+   IMPORTANT, read before shipping:
+   - These are FORMAT-ONLY patterns for the in-browser tester. The browser
+     RegExp is not the AEDLP engine. There is no Luhn check on cards and no
+     checksum validation on national IDs (NHS mod-11, NL BSN 11-test, Italian
+     Codice Fiscale, NPI/Luhn, DEA, MBI, ISIN, etc.). AEDLP validates those.
+     Each detector says so in notes and carries a falsePositiveRisk.
+   - Confirm every pattern in the AEDLP Custom Policy Tester before use.
+   - Do not duplicate detectors that already exist in the library
+     (gb driving licence, NINO, passport, NHS, IBAN, electoral roll; US SSN,
+     passport, ITIN, EIN, bank account, ABA routing, phone; FR NIR, DE Steuer-ID,
+     ES DNI/NIF, IE PPS; generic credit-card PAN, IBAN, SWIFT/BIC).
+
+   Field shape matches the handoff data.js regex detectors exactly:
+   id, displayName, aliases, description, country, regionLabel, category, regex,
+   contextKeywords, positiveExamples, negativeExamples, recommendedAction,
+   falsePositiveRisk, notes. conditionType is "regular_expression".
+   ============================================================ */
+
+export const phase1Detectors: RegexDetector[] = [
+  /* ---------------- Payment card data (PCI), per brand ---------------- */
+  /* Card data is region-neutral but central to US, UK and EU finance/retail.
+     Format only, no Luhn. Optional single consistent separator via backref. */
+  { id: "cc-visa", displayName: "Visa Card Number", conditionType: "regular_expression",
+    aliases: ["visa", "visa card", "visa pan"],
+    description: "Visa primary account number (16-digit), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b4\\d{3}([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["visa", "card number", "credit card", "PAN", "payment card"],
+    positiveExamples: ["4111 1111 1111 1111", "Card: 4111111111111111"],
+    negativeExamples: ["Reference 4111 11 11", "Order 1234 5678 9012 3456"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. AEDLP applies Luhn. 13-digit legacy Visa is not matched."] },
+
+  { id: "cc-mastercard", displayName: "Mastercard Number", conditionType: "regular_expression",
+    aliases: ["mastercard", "mc card", "mastercard pan"],
+    description: "Mastercard PAN including 2-series (2221-2720), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b(?:5[1-5]\\d{2}|222[1-9]|22[3-9]\\d|2[3-6]\\d{2}|27[01]\\d|2720)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["mastercard", "card number", "credit card", "PAN", "payment card"],
+    positiveExamples: ["5500 0000 0000 0004", "2221 0000 0000 0009"],
+    negativeExamples: ["Account 5000 1234 5678 9010"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Covers legacy 51-55 and 2-series 2221-2720 BINs."] },
+
+  { id: "cc-amex", displayName: "American Express Number", conditionType: "regular_expression",
+    aliases: ["amex", "american express", "amex card"],
+    description: "American Express 15-digit PAN (4-6-5), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b3[47]\\d{2}([ -]?)\\d{6}\\1\\d{5}\\b",
+    contextKeywords: ["amex", "american express", "card number", "credit card", "PAN"],
+    positiveExamples: ["3782 822463 10005", "378282246310005"],
+    negativeExamples: ["Ref 3700 0000 0000 002"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Amex is 15 digits in 4-6-5 grouping."] },
+
+  { id: "cc-discover", displayName: "Discover Card Number", conditionType: "regular_expression",
+    aliases: ["discover", "discover card"],
+    description: "Discover 16-digit PAN (6011, 65, 644-649, 622), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b6(?:011|5\\d{2}|4[4-9]\\d|22[12]\\d)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["discover", "card number", "credit card", "PAN"],
+    positiveExamples: ["6011 1111 1111 1117", "6011111111111117"],
+    negativeExamples: ["Code 6000 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Discover BIN ranges are broad; confirm in AEDLP."] },
+
+  { id: "cc-diners", displayName: "Diners Club Number", conditionType: "regular_expression",
+    aliases: ["diners", "diners club"],
+    description: "Diners Club 14-digit PAN (300-305, 36, 38-39), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b3(?:0[0-5]|[68]\\d)\\d([ -]?)\\d{6}\\1\\d{4}\\b",
+    contextKeywords: ["diners", "diners club", "card number", "credit card", "PAN"],
+    positiveExamples: ["3056 930902 5904", "30569309025904"],
+    negativeExamples: ["Ref 3700 000000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Diners is 14 digits."] },
+
+  { id: "cc-jcb", displayName: "JCB Card Number", conditionType: "regular_expression",
+    aliases: ["jcb", "jcb card"],
+    description: "JCB 16-digit PAN (3528-3589), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b35(?:2[89]|[3-8]\\d)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["jcb", "card number", "credit card", "PAN"],
+    positiveExamples: ["3530 1113 3330 0000", "3530111333300000"],
+    negativeExamples: ["Code 3500 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. JCB BINs 3528-3589."] },
+
+  { id: "cc-unionpay", displayName: "UnionPay Card Number", conditionType: "regular_expression",
+    aliases: ["unionpay", "union pay", "cup card"],
+    description: "UnionPay 16-digit PAN (BIN 62), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b62\\d{2}([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["unionpay", "union pay", "card number", "credit card", "PAN"],
+    positiveExamples: ["6212 3456 7890 0000", "6212345678900000"],
+    negativeExamples: ["Ref 6300 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. UnionPay can be 16-19 digits; this matches 16."] },
+
+  { id: "cc-maestro", displayName: "Maestro Card Number", conditionType: "regular_expression",
+    aliases: ["maestro", "maestro card"],
+    description: "Maestro PAN (variable 12-19 digits), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b(?:5018|5020|5038|5893|6304|6759|676[1-3])\\d{8,15}\\b",
+    contextKeywords: ["maestro", "card number", "debit card", "PAN"],
+    positiveExamples: ["6759649826438453", "6304000000000000"],
+    negativeExamples: ["Ref 5000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "high",
+    notes: ["Format only, no Luhn check. Variable length makes this high false-positive; pair with context."] },
+
+  /* ---------------- United Kingdom ---------------- */
+  { id: "gb-utr", displayName: "UK Unique Taxpayer Reference (UTR)", conditionType: "regular_expression",
+    aliases: ["utr", "unique taxpayer reference", "self assessment number", "hmrc utr"],
+    description: "HMRC 10-digit Unique Taxpayer Reference, format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Government ID",
+    regex: "\\b\\d{5}\\s?\\d{5}\\b",
+    contextKeywords: ["UTR", "unique taxpayer reference", "self assessment", "HMRC", "tax reference"],
+    positiveExamples: ["UTR: 1234567890", "Self assessment 12345 67890"],
+    negativeExamples: ["Order 1234", "Phone 0123 456"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Bare 10-digit shape, very broad. Always pair with UTR context keywords."] },
+
+  { id: "gb-sort-code", displayName: "UK Bank Sort Code", conditionType: "regular_expression",
+    aliases: ["sort code", "uk sort code", "bank sort code"],
+    description: "UK 6-digit bank sort code (XX-XX-XX), format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\b\\d{2}[- ]?\\d{2}[- ]?\\d{2}\\b",
+    contextKeywords: ["sort code", "sort-code", "bank account", "account number"],
+    positiveExamples: ["Sort code: 12-34-56", "12 34 56"],
+    negativeExamples: ["Date 01 02 03"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Six digits is very broad; pair with sort code context and usually a UK account number nearby."] },
+
+  { id: "gb-vat", displayName: "UK VAT Registration Number", conditionType: "regular_expression",
+    aliases: ["uk vat", "vat number", "vat registration", "gb vat"],
+    description: "UK VAT registration number (standard, GD or HA forms), format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\bGB\\s?(?:\\d{3}\\s?\\d{4}\\s?\\d{2}(?:\\s?\\d{3})?|GD\\d{3}|HA\\d{3})\\b",
+    contextKeywords: ["VAT", "VAT number", "VAT registration", "GB VAT"],
+    positiveExamples: ["GB123456789", "VAT: GB 123 4567 89", "GBGD001"],
+    negativeExamples: ["GB12345", "Reference GBABC"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Covers 9-digit, 12-digit branch, and government/health body GD/HA forms."] },
+
+  { id: "gb-sedol", displayName: "UK SEDOL (Security Identifier)", conditionType: "regular_expression",
+    aliases: ["sedol", "stock exchange daily official list"],
+    description: "London SEDOL 7-character security identifier, format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\b[B-DF-HJ-NP-TV-XYZ0-9]{6}\\d\\b",
+    contextKeywords: ["SEDOL", "security identifier", "instrument", "holdings"],
+    positiveExamples: ["SEDOL B0YBKL9", "0263494"],
+    negativeExamples: ["Code ABCDEFG"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Consonant-and-digit shape; check digit not validated. Pair with SEDOL context."] },
+
+  /* ---------------- European Union (core) ---------------- */
+  { id: "it-codice-fiscale", displayName: "Italian Codice Fiscale", conditionType: "regular_expression",
+    aliases: ["codice fiscale", "italian tax code", "italy fiscal code"],
+    description: "Italian Codice Fiscale 16-character personal tax code, format only.",
+    country: "IT", regionLabel: "Italy", category: "Government ID",
+    regex: "\\b[A-Za-z]{6}\\d{2}[A-EHLMPR-Ta-ehlmpr-t]\\d{2}[A-Za-z]\\d{3}[A-Za-z]\\b",
+    contextKeywords: ["codice fiscale", "tax code", "fiscal code", "CF"],
+    positiveExamples: ["RSSMRA85T10A562S", "Codice Fiscale: VRDLGI99B12F205X"],
+    negativeExamples: ["Reference ABCDEF12345"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Strong structural shape; the trailing control character is not checksum-validated here."] },
+
+  { id: "nl-bsn", displayName: "Netherlands BSN (Citizen Number)", conditionType: "regular_expression",
+    aliases: ["bsn", "burgerservicenummer", "dutch citizen number", "netherlands bsn"],
+    description: "Netherlands Burgerservicenummer, 8-9 digits, format only.",
+    country: "NL", regionLabel: "Netherlands", category: "Government ID",
+    regex: "\\b\\d{9}\\b",
+    contextKeywords: ["BSN", "burgerservicenummer", "citizen number", "sofinummer"],
+    positiveExamples: ["BSN: 111222333", "Burgerservicenummer 123456782"],
+    negativeExamples: ["Order 12345678", "Phone 0612345678"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Bare 9-digit shape with an 11-test checksum that is not validated here; always pair with BSN context."] },
+
+  { id: "es-nie", displayName: "Spanish NIE (Foreigner ID)", conditionType: "regular_expression",
+    aliases: ["nie", "numero de identidad de extranjero", "spanish foreigner id"],
+    description: "Spanish NIE foreigner identity number (X/Y/Z + 7 digits + letter), format only.",
+    country: "ES", regionLabel: "Spain", category: "Government ID",
+    regex: "\\b[XYZxyz]\\d{7}[A-Za-z]\\b",
+    contextKeywords: ["NIE", "numero de identidad", "foreigner", "extranjero"],
+    positiveExamples: ["NIE: X1234567L", "Y7654321Z"],
+    negativeExamples: ["DNI 12345678Z"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Control letter not checksum-validated. Complements the existing DNI/NIF detector."] },
+
+  { id: "eu-vat", displayName: "EU VAT Number (multi-country)", conditionType: "regular_expression",
+    aliases: ["eu vat", "vat number", "vat identification number", "ust-idnr", "tva"],
+    description: "EU VAT identification number across member states, format only.",
+    country: "EU", regionLabel: "European Union", category: "Financial data",
+    regex: "\\b(?:ATU\\d{8}|BE0?\\d{9,10}|BG\\d{9,10}|HR\\d{11}|CY\\d{8}[A-Z]|CZ\\d{8,10}|DE\\d{9}|DK\\d{8}|EE\\d{9}|EL\\d{9}|ES[A-Z0-9]\\d{7}[A-Z0-9]|FI\\d{8}|FR[A-Z0-9]{2}\\d{9}|HU\\d{8}|IE\\d{7}[A-Z]{1,2}|IT\\d{11}|LT(?:\\d{9}|\\d{12})|LU\\d{8}|LV\\d{11}|MT\\d{8}|NL\\d{9}B\\d{2}|PL\\d{10}|PT\\d{9}|RO\\d{2,10}|SE\\d{12}|SI\\d{8}|SK\\d{10})\\b",
+    contextKeywords: ["VAT", "VAT number", "USt-IdNr", "TVA", "partita IVA", "BTW"],
+    positiveExamples: ["DE123456789", "FRXX999999999", "IT12345678901", "NL123456789B01"],
+    negativeExamples: ["VAT 12345", "Code ZZ999"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Broad alternation across member states; per-country check digits are not validated."] },
+
+  { id: "isin", displayName: "ISIN (Securities Identifier)", conditionType: "regular_expression",
+    aliases: ["isin", "international securities identification number"],
+    description: "ISIN 12-character security identifier, format only.",
+    country: "EU", regionLabel: "European Union", category: "Financial data",
+    regex: "\\b[A-Z]{2}[A-Z0-9]{9}\\d\\b",
+    contextKeywords: ["ISIN", "security identifier", "instrument", "holdings", "portfolio"],
+    positiveExamples: ["US0378331005", "GB0002634946", "ISIN DE000BAY0017"],
+    negativeExamples: ["Code 12ABC", "Ref USABC"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Two-letter country prefix plus 9 alphanumerics plus a check digit, not Luhn-validated here."] },
+
+  /* ---------------- United States ---------------- */
+  { id: "us-drivers-license", displayName: "US Driver's License (common state shapes)", conditionType: "regular_expression",
+    aliases: ["us drivers license", "driver license", "dl number", "drivers licence"],
+    description: "US driver's license matching several common state formats, format only.",
+    country: "US", regionLabel: "United States", category: "Government ID",
+    regex: "\\b(?:[A-Z]\\d{7}|[A-Z]\\d{12}|\\d{8,9}|[A-Z]\\d{11,12})\\b",
+    contextKeywords: ["driver license", "driver's license", "DL", "DL number", "license number"],
+    positiveExamples: ["DL: D1234567", "License number 123456789"],
+    negativeExamples: ["Order 12345", "Code ABC123"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["State formats vary widely; this matches several common shapes and will over-match. Pair with context and confirm the specific state in AEDLP."] },
+
+  { id: "us-npi", displayName: "US National Provider Identifier (NPI)", conditionType: "regular_expression",
+    aliases: ["npi", "national provider identifier", "provider number"],
+    description: "US healthcare NPI, 10 digits beginning 1 or 2, format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[12]\\d{9}\\b",
+    contextKeywords: ["NPI", "national provider identifier", "provider", "rendering provider"],
+    positiveExamples: ["NPI: 1234567893", "Provider 2123456789"],
+    negativeExamples: ["Phone 5551234567", "Account 9123456789"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["10-digit shape with a Luhn check that is not validated here; pair with NPI context."] },
+
+  { id: "us-dea-number", displayName: "US DEA Registration Number", conditionType: "regular_expression",
+    aliases: ["dea number", "dea registration", "prescriber dea"],
+    description: "US DEA registration number (2 letters + 7 digits), format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[ABFGMPRXabfgmprx][A-Za-z9]\\d{7}\\b",
+    contextKeywords: ["DEA", "DEA number", "DEA registration", "prescriber"],
+    positiveExamples: ["DEA: AB1234563", "FX9876543"],
+    negativeExamples: ["Ref ZZ1234567"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Registrant-type first letter plus 7 digits; the check digit is not validated here."] },
+
+  { id: "us-medicare-mbi", displayName: "US Medicare Beneficiary Identifier (MBI)", conditionType: "regular_expression",
+    aliases: ["mbi", "medicare beneficiary identifier", "medicare number"],
+    description: "US Medicare MBI, 11 characters in the CMS format, format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[1-9][ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy][0-9ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]\\d[ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy][0-9ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]\\d[ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]{2}\\d{2}\\b",
+    contextKeywords: ["MBI", "medicare", "beneficiary", "medicare number"],
+    positiveExamples: ["MBI: 1EG4TE5MK73", "1EG4TE5MK73"],
+    negativeExamples: ["SSN 123-45-6789", "Code 1234567890A"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["CMS MBI excludes the letters S, L, O, I, B and Z to avoid digit confusion. Dashes are sometimes shown; this matches the undashed form."] },
+
+  { id: "us-cusip", displayName: "US CUSIP (Securities Identifier)", conditionType: "regular_expression",
+    aliases: ["cusip", "security identifier"],
+    description: "US CUSIP 9-character security identifier, format only.",
+    country: "US", regionLabel: "United States", category: "Financial data",
+    regex: "\\b[0-9A-Za-z]{3}[0-9A-Za-z]{5}\\d\\b",
+    contextKeywords: ["CUSIP", "security identifier", "instrument", "holdings", "portfolio"],
+    positiveExamples: ["037833100", "CUSIP 38259P508"],
+    negativeExamples: ["Code 12AB", "Ref ABCDEFGHIJ"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Nine-character issuer-plus-issue-plus-check shape; check digit not validated here. Pair with CUSIP context."] },
+];
+
 /* ---------------- keyword sets (industry term lists) ---------------- */
 const kw = (o: KwInput): KeywordDetector => ({
   conditionType: "keyword",
@@ -639,6 +912,7 @@ const fileExtensionDetectors = [
 
 const detectors: Detector[] = [
   ...regexDetectors,
+  ...phase1Detectors,
   ...keywordDetectors,
   ...transportDetectors,
   ...keywordPatterns,
@@ -714,7 +988,7 @@ detectors.forEach((d) => {
   d.industries = [...set];
 });
 const regions = ["Global", "United Kingdom", "United States", "France", "Germany", "Spain",
-  "Ireland", "Canada", "Australia", "European Union"];
+  "Italy", "Netherlands", "Ireland", "Canada", "Australia", "European Union"];
 
 const actions: Record<RecommendedAction, { label: string; desc: string; rank: number }> = {
   silently_track: { label: "Silently track", desc: "Log the event only; no end-user warning.", rank: 1 },

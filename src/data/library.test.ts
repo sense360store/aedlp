@@ -3,13 +3,14 @@ import { AEDLP_DATA } from "./library";
 import type { ConditionType } from "../types";
 
 /**
- * Phase 0 parity guard: the ported library must match the prototype data.js
- * in detector count and condition-type coverage. This replaces the temporary
- * acceptance assertion and stays as a regression check.
+ * Library count guard: the prototype data.js ported 71 detectors; Phase 1
+ * adds 22 regex detectors (UK, EU core, US) for a total of 93. This pins the
+ * count and condition-type coverage so a later edit cannot silently drop or
+ * duplicate a detector.
  */
 describe("AEDLP_DATA library (prototype parity)", () => {
-  it("ports the full prototype detector set (71 detectors)", () => {
-    expect(AEDLP_DATA.detectors).toHaveLength(71);
+  it("holds the prototype set plus the Phase 1 expansion (93 detectors)", () => {
+    expect(AEDLP_DATA.detectors).toHaveLength(93);
   });
 
   it("covers all five condition types", () => {
@@ -29,7 +30,7 @@ describe("AEDLP_DATA library (prototype parity)", () => {
       counts[d.conditionType] = (counts[d.conditionType] || 0) + 1;
     }
     expect(counts).toEqual({
-      regular_expression: 33,
+      regular_expression: 55,
       keyword: 11,
       keyword_pattern: 7,
       recipient_domain: 3,
