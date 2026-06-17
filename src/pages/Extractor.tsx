@@ -14,16 +14,8 @@ import { Callout } from "../components/ui/Callout";
 import { CopyButton } from "../components/ui/CopyButton";
 import { useTheme } from "../theme";
 import { saveTrustedDomains } from "../lib/trusted";
-import {
-  isCSV,
-  parseCSV,
-  readSheetNames,
-  parseWorkbook,
-  pickSheet,
-  emailDomain,
-  TARGET_SHEET,
-  type ParsedResult,
-} from "../lib/extract";
+import { isCSV, emailDomain, type ParsedResult } from "../lib/extract";
+import { parseFile } from "../lib/parseClient";
 
 function fmtBytes(n: number): string {
   if (!n) return "";
@@ -75,12 +67,13 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
         </div>
         <div className="dz-title">Drop an enforcer export here</div>
         <div className="dz-sub">
-          .xlsx, .xls or .csv — or click to browse. Large files (200&nbsp;MB+) stream locally; nothing is uploaded.
+          .xlsx or .csv — or click to browse. Large files (200&nbsp;MB+) are streamed locally in your browser; nothing
+          is uploaded.
         </div>
         <input
           ref={inputRef}
           type="file"
-          accept=".xlsx,.xls,.csv"
+          accept=".xlsx,.csv"
           style={{ display: "none" }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -109,7 +102,7 @@ export default function Extractor() {
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [parsed, setParsed] = useState<ParsedResult | null>(null);
-  const [sheetChoice, setSheetChoice] = useState<{ names: string[]; buf: Uint8Array | null }>({ names: [], buf: null });
+  const [sheetChoice, setSheetChoice] = useState<{ names: string[] }>({ names: [] });
 
   // curation state
   const [typeFilter, setTypeFilter] = useState("external");
@@ -120,50 +113,35 @@ export default function Extractor() {
   const [manual, setManual] = useState<{ domain: string }[]>([]);
   const [manualInput, setManualInput] = useState("");
 
-  const runParse = useCallback(
-    async (f: File, opts: { names?: string[]; buf?: Uint8Array | null; sheetName?: string } = {}) => {
-      setError("");
-      setProgress(0);
-      setStage("parsing");
-      setFile(f);
-      try {
-        let res: ParsedResult;
-        if (isCSV(f)) {
-          res = await parseCSV(f, setProgress);
-        } else {
-          let names = opts.names;
-          let buf = opts.buf;
-          if (!names) {
-            const r = await readSheetNames(f);
-            names = r.names;
-            buf = r.buf;
-          }
-          const target = opts.sheetName || pickSheet(names);
-          // if no obvious target and several sheets, let the user choose
-          if (!opts.sheetName && names.length > 1 && !TARGET_SHEET.test(target)) {
-            setSheetChoice({ names, buf: buf ?? null });
-            setStage("sheet");
-            return;
-          }
-          res = await parseWorkbook(f, target, buf ?? undefined);
-        }
-        // reset curation
-        setDeselected(new Set());
-        setRemoved(new Set());
-        setManual([]);
-        setSearch("");
-        setParsed(res);
-        // default the type filter to whichever of external/freemail exists
-        const types = [...res.typeTotals.keys()];
-        setTypeFilter(types.includes("external") ? "external" : types[0] || "external");
-        setStage("ready");
-      } catch (e) {
-        setError((e as Error).message || String(e));
-        setStage("idle");
+  const runParse = useCallback(async (f: File, sheetName?: string) => {
+    setError("");
+    setProgress(0);
+    setStage("parsing");
+    setFile(f);
+    try {
+      const outcome = await parseFile(f, { sheetName, onProgress: setProgress });
+      // no obvious target sheet and several to choose from — let the user pick
+      if (outcome.kind === "sheet") {
+        setSheetChoice({ names: outcome.names });
+        setStage("sheet");
+        return;
       }
-    },
-    [],
-  );
+      const res = outcome.result;
+      // reset curation
+      setDeselected(new Set());
+      setRemoved(new Set());
+      setManual([]);
+      setSearch("");
+      setParsed(res);
+      // default the type filter to whichever of external/freemail exists
+      const types = [...res.typeTotals.keys()];
+      setTypeFilter(types.includes("external") ? "external" : types[0] || "external");
+      setStage("ready");
+    } catch (e) {
+      setError((e as Error).message || String(e));
+      setStage("idle");
+    }
+  }, []);
 
   /* derive the working domain list */
   const baseDomains = useMemo(() => {
@@ -291,13 +269,12 @@ export default function Extractor() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>Reading {file && file.name}…</div>
                   <div style={{ fontSize: 12, color: "var(--text-3)" }}>
-                    {isCSV(file as File) ? "Streaming rows locally" : "Parsing workbook"} · {fmtBytes(file?.size ?? 0)}
+                    {file && isCSV(file) ? "Streaming rows locally" : "Streaming workbook locally"} ·{" "}
+                    {fmtBytes(file?.size ?? 0)}
                   </div>
-                  {file && isCSV(file) && (
-                    <div className="prog-track">
-                      <div className="prog-bar" style={{ width: (progress * 100).toFixed(0) + "%" }}></div>
-                    </div>
-                  )}
+                  <div className="prog-track">
+                    <div className="prog-bar" style={{ width: (progress * 100).toFixed(0) + "%" }}></div>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -310,11 +287,7 @@ export default function Extractor() {
               </p>
               <div className="export-grid">
                 {sheetChoice.names.map((n) => (
-                  <button
-                    key={n}
-                    className="btn sm"
-                    onClick={() => file && runParse(file, { sheetName: n, names: sheetChoice.names, buf: sheetChoice.buf })}
-                  >
+                  <button key={n} className="btn sm" onClick={() => file && runParse(file, n)}>
                     <Icon name="layers" size={13} />
                     {n}
                   </button>
