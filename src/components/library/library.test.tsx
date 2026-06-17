@@ -62,10 +62,10 @@ const det = (id: string) => byId.get(id)!;
 describe("LibraryPanel filtering", () => {
   it("renders all detectors with the right total and per-type tab counts", () => {
     const { container } = render(<Harness />);
-    expect(container.querySelector(".lib-count")?.textContent).toContain("93 of 93 detectors");
+    expect(container.querySelector(".lib-count")?.textContent).toContain("103 of 103 detectors");
     const tabs = Array.from(container.querySelectorAll(".type-tab")).map((t) => t.textContent);
     expect(tabs).toEqual(
-      expect.arrayContaining(["All93", "Regex55", "Keywords11", "Pattern7", "Recipients3", "File types17"]),
+      expect.arrayContaining(["All103", "Regex59", "Keywords15", "Pattern9", "Recipients3", "File types17"]),
     );
   });
 
@@ -81,8 +81,8 @@ describe("LibraryPanel filtering", () => {
   it("filters by type tab", () => {
     const { container } = render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: /Keywords/ }));
-    expect(container.querySelector(".lib-count")?.textContent).toContain("11 of 93 detectors");
-    expect(container.querySelectorAll(".lib-row")).toHaveLength(11);
+    expect(container.querySelector(".lib-count")?.textContent).toContain("15 of 103 detectors");
+    expect(container.querySelectorAll(".lib-row")).toHaveLength(15);
   });
 
   it("shows Clear filters only when a filter is active and resets it", () => {
@@ -93,7 +93,7 @@ describe("LibraryPanel filtering", () => {
     expect(screen.getByText("Clear filters")).toBeTruthy();
     fireEvent.click(screen.getByText("Clear filters"));
     expect(screen.queryByText("Clear filters")).toBeNull();
-    expect(container.querySelector(".lib-count")?.textContent).toContain("93 of 93 detectors");
+    expect(container.querySelector(".lib-count")?.textContent).toContain("103 of 103 detectors");
   });
 
   it("renders the empty state when nothing matches", () => {
