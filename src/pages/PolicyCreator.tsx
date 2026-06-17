@@ -215,6 +215,7 @@ export default function PolicyCreator() {
             addedIds={addedIds}
             onToggle={onToggle}
             onTest={onTest}
+            onAddCompetitors={onAddCompetitors}
           />
         </div>
 
@@ -233,7 +234,6 @@ export default function PolicyCreator() {
             trustedDomains={trusted}
             onUseTrusted={onUseTrusted}
             onRefreshTrusted={onRefreshTrusted}
-            onAddCompetitors={onAddCompetitors}
           />
           <div id="test-anchor"></div>
           <TestPanel

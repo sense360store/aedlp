@@ -9,11 +9,12 @@
    recipient-domain condition. Nothing is auto-applied, and unverified
    or unchecked rows are never added silently.
 
-   This is an *inline* expanding panel inside the policy-draft
-   conditions area — not a modal popup. It opens beneath the "Find
-   competitors" trigger and leaves the policy draft visible, so the
-   lookup is part of the drafting flow. Escape and a visible Close both
-   collapse it, and focus returns to the trigger on close.
+   This is an *inline* expanding panel on the Recipients surface — it
+   lives WITH the other ways to build a recipient-domain list (the
+   static packs, the trusted-domain handoff), not a modal popup. It
+   opens beneath the "Find competitors with AI" trigger, so the lookup
+   is one of the recipient-list builders. Escape and a visible Close
+   both collapse it, and focus returns to the trigger on close.
 
    Only the company name and industry typed here leave the browser.
    Uploaded files and the extractor stay entirely local — this surface
@@ -23,6 +24,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Badge } from "../ui/Badge";
 import { Callout } from "../ui/Callout";
+import { CopyButton } from "../ui/CopyButton";
 import { fetchCompetitors, type CompetitorSuggestion, type Confidence } from "../../lib/competitors";
 
 type Status = "idle" | "loading" | "done" | "error";
@@ -34,9 +36,15 @@ export interface CompetitorFinderProps {
   onAdd: (domains: string[]) => void;
   /** Class for the trigger button (defaults to a small button). */
   triggerClassName?: string;
+  /** Trigger label. The Recipients surface uses the default "with AI" wording. */
+  triggerLabel?: string;
 }
 
-export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: CompetitorFinderProps) {
+export function CompetitorFinder({
+  onAdd,
+  triggerClassName = "btn sm",
+  triggerLabel = "Find competitors with AI",
+}: CompetitorFinderProps) {
   const [open, setOpen] = useState(false);
   const [company, setCompany] = useState("");
   const [industry, setIndustry] = useState("");
@@ -138,6 +146,15 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
     });
   }
 
+  // Select-all / deselect-all over the reviewed suggestions. Like every other
+  // recipient-domain surface, this only drives selection — nothing is added to
+  // the policy until the user clicks Add.
+  const allDomains = suggestions.map((s) => s.domain);
+  const allSelected = allDomains.length > 0 && selected.size === allDomains.length;
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(allDomains));
+  }
+
   function add() {
     const domains = suggestions.filter((s) => selected.has(s.domain)).map((s) => s.domain);
     if (!domains.length) return;
@@ -154,10 +171,10 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
         onClick={() => (open ? close() : setOpen(true))}
         aria-expanded={open}
         aria-controls={panelId}
-        title="Find competitor domains for a company"
+        title="Find competitor domains for a company, suggested by AI"
       >
-        <Icon name="building" size={13} />
-        Find competitors
+        <Icon name="sparkle" size={13} />
+        {triggerLabel}
         <Icon name="chevronDown" size={13} className={`cf-chev ${open ? "open" : ""}`} />
       </button>
 
@@ -166,8 +183,8 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
           <div className="cf-head">
             <div className="cf-title-wrap">
               <div className="cf-title" id={titleId}>
-                <Icon name="building" size={15} />
-                Find competitor domains
+                <Icon name="sparkle" size={15} />
+                Find competitor domains with AI
               </div>
               <div className="cf-sub">Suggest → review → curate → add to a recipient-domain condition</div>
             </div>
@@ -274,6 +291,23 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
                     {suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"}
                   </span>
                   <span className="small muted">Select the domains to add</span>
+                </div>
+                <div className="dsl-tools">
+                  <button
+                    type="button"
+                    className="btn xs ghost dsl-toggle"
+                    onClick={toggleAll}
+                    aria-pressed={allSelected}
+                  >
+                    <Icon name={allSelected ? "x" : "check"} size={12} />
+                    {allSelected ? "Deselect all" : "Select all"}
+                  </button>
+                  <span className="dsl-count muted small">
+                    {selected.size}/{allDomains.length} selected
+                  </span>
+                  <span className="dsl-spacer" />
+                  <CopyButton value={() => allDomains.join("\n")} label="Copy all domains" className="dsl-copy" icon="list" />
+                  <CopyButton value={() => allDomains.join(", ")} label="Comma-separated" className="dsl-copy" icon="copy" />
                 </div>
                 <div className="cf-disclaimer small muted">
                   Domains are model-suggested and DNS-checked. Confirm before use.

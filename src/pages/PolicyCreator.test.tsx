@@ -79,20 +79,26 @@ describe("PolicyCreator page", () => {
     expect(verdict()).toContain("1/2");
   });
 
-  it("opens the competitor finder inline within the policy draft, not as an overlay", () => {
+  it("surfaces the AI competitor finder on the library Recipients view, inline and not in the policy draft", () => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
-    // The lookup expands as an inline panel inside the policy draft and leaves
-    // it visible — it is not a viewport-covering modal overlay.
-    expect(container.querySelector(".policy-draft .cf-panel")).not.toBeNull();
+
+    // The lookup now lives WITH the other ways to build a recipient-domain list,
+    // on the Recipients surface — not buried in the policy-draft conditions corner.
+    expect(screen.queryByRole("button", { name: "Find competitors with AI" })).toBeNull();
+    expect(container.querySelector(".policy-draft .cf-panel")).toBeNull();
+
+    // Switch to the Recipients view: a clear entry point appears next to the packs.
+    fireEvent.click(screen.getByRole("button", { name: /Recipients/ }));
+    expect(container.querySelector(".col-lib .lib-recipients-bar")).not.toBeNull();
+    const trigger = screen.getByRole("button", { name: "Find competitors with AI" });
+
+    // It expands inline within the library column — never a modal overlay, and
+    // never inside the policy draft.
+    fireEvent.click(trigger);
+    expect(container.querySelector(".col-lib .cf-panel")).not.toBeNull();
+    expect(container.querySelector(".policy-draft .cf-panel")).toBeNull();
     expect(container.querySelector(".cf-overlay")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(container.querySelector(".policy-draft")).not.toBeNull();
-
-    // It is contained by the scrollable policy column and carries its own
-    // pinned-foot / scrolling-body structure, so it can never overflow the
-    // height-capped column unreachably.
-    expect(container.querySelector(".col-policy .policy-draft .cf-panel")).not.toBeNull();
     const panel = container.querySelector(".cf-panel") as HTMLElement;
     expect(panel.querySelector(".cf-body")).not.toBeNull();
     expect(panel.querySelector(".cf-foot")).not.toBeNull();

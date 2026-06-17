@@ -7,13 +7,13 @@
 import { useState } from "react";
 import { Icon } from "../ui/Icon";
 import { CopyButton } from "../ui/CopyButton";
+import { DomainSelectList } from "../ui/DomainSelectList";
 import { RegexHighlight } from "../ui/RegexHighlight";
 import { typeTone, typeShort } from "../../lib/tones";
 import { conditionCopyValue } from "../../lib/match";
 import { slugify } from "../../lib/suggest";
 import { AEDLP_DATA } from "../../data/library";
 import { TrustedDomainsBar } from "./TrustedDomainsBar";
-import { CompetitorFinder } from "../competitors/CompetitorFinder";
 import type { Condition, RecommendedAction } from "../../types";
 
 export type ScanKey = "body" | "subject" | "attachments";
@@ -213,14 +213,7 @@ function ConditionRow({ c, index, total, operator, onRemove, onToggleBoundary }:
         ) : c.conditionType === "keyword_pattern" ? (
           <code className="pattern">{value}</code>
         ) : c.conditionType === "recipient_domain" ? (
-          <div className="prev-chips">
-            {c.domains.slice(0, 8).map((k) => (
-              <span key={k} className="prev-chip mono">
-                {k}
-              </span>
-            ))}
-            {c.domains.length > 8 && <span className="prev-more">+{c.domains.length - 8} domains</span>}
-          </div>
+          <DomainSelectList domains={c.domains} collapsedCount={8} />
         ) : c.conditionType === "file_extension" ? (
           <div className="prev-chips">
             {c.extensions.slice(0, 12).map((k) => (
@@ -288,8 +281,6 @@ export interface PolicyDraftProps {
   trustedDomains?: string[];
   onUseTrusted?: () => void;
   onRefreshTrusted?: () => void;
-  /** Curate looked-up competitor domains into a recipient-domain condition. */
-  onAddCompetitors?: (domains: string[]) => void;
 }
 
 export function PolicyDraft({
@@ -306,7 +297,6 @@ export function PolicyDraft({
   trustedDomains = [],
   onUseTrusted = () => {},
   onRefreshTrusted = () => {},
-  onAddCompetitors,
 }: PolicyDraftProps) {
   const empty = conditions.length === 0;
   const hasRecipientCondition = conditions.some((c) => c.conditionType === "recipient_domain");
@@ -418,9 +408,6 @@ export function PolicyDraft({
         {/* conditions */}
         <div className="pd-cond-head">
           <span className="section-label">Conditions ({conditions.length})</span>
-          {onAddCompetitors && (
-            <CompetitorFinder onAdd={onAddCompetitors} triggerClassName="btn xs ghost" />
-          )}
           {conditions.length > 1 && (
             <div className="logic-toggle">
               <span className="muted small">Match</span>

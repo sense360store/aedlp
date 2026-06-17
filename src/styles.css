@@ -248,6 +248,35 @@ code { font-family: var(--font-mono); }
   background: var(--green-weak); border-color: var(--green-border); }
 .prev-more { font-size: 11px; color: var(--text-3); font-weight: 600; align-self: center; }
 
+/* selectable recipient-domain list: select-all / copy-all / expand, shared by
+   the library inspector, a policy-draft recipient condition, and the AI review
+   list. Chips are toggle buttons; copy buttons reuse .copybtn (with feedback). */
+.dsl { display: flex; flex-direction: column; gap: 8px; }
+.dsl-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dsl-toggle { flex-shrink: 0; }
+.dsl-count { white-space: nowrap; }
+.dsl-spacer { flex: 1 1 auto; }
+.dsl-copy { flex-shrink: 0; }
+.prev-chip.pick { cursor: pointer; transition: opacity .12s, border-color .12s, box-shadow .12s; }
+.prev-chip.pick:hover { border-color: var(--border-strong); }
+.prev-chip.pick.off { opacity: .4; }
+.prev-chip.pick.on { box-shadow: inset 0 0 0 1px var(--amber-border); }
+.prev-chip.pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dsl-more { font-size: 11px; font-weight: 650; color: var(--accent-text); background: var(--accent-weak);
+  border: 1px solid var(--accent-weak-border); border-radius: var(--r-pill); padding: 2px 10px; align-self: center; }
+.dsl-more:hover { border-color: var(--accent); }
+
+/* Recipients-view entry point for the AI competitor lookup, sitting WITH the
+   static packs as another way to build a recipient-domain list. */
+.lib-recipients-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--accent-weak-border);
+  background: var(--accent-weak); border-radius: var(--radius-sm); }
+.lrb-text { display: inline-flex; align-items: center; gap: 7px; flex: 1; min-width: 180px;
+  font-size: 12px; color: var(--text-2); line-height: 1.45; }
+.lrb-text svg { color: var(--accent); flex-shrink: 0; }
+.cf-entry { background: var(--surface); border-color: var(--accent-weak-border); color: var(--accent-text); font-weight: 620; }
+.cf-entry:hover { background: var(--surface); border-color: var(--accent); }
+
 /* inspector */
 .lib-row-body { border-top: 1px solid var(--border); padding: 14px; background: var(--surface-2); }
 .inspector { display: flex; flex-direction: column; gap: 11px; }
@@ -322,8 +351,6 @@ code { font-family: var(--font-mono); }
 .pd-divider { height: 1px; background: var(--border); }
 .pd-cond-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pd-cond-head .section-label { flex: 1; }
-/* The competitor panel is a flex child of this header; order + a full
-   basis drop it onto its own line beneath the controls (see .cf-panel). */
 .logic-toggle { display: inline-flex; align-items: center; gap: 4px; }
 .logic-btn { font-size: 11px; font-weight: 650; padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid var(--border); background: var(--surface-2); color: var(--text-3); }
 .logic-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -505,20 +532,21 @@ code { font-family: var(--font-mono); }
 
 /* ============================================================
    Find-competitors panel (the one lookup surface)
-   An inline, fully-opaque expanding panel inside the policy-draft
-   conditions area — not a modal. Built from existing tokens only.
+   An inline, fully-opaque expanding panel on the Recipients surface —
+   it lives in .lib-recipients-bar, with the other ways to build a
+   recipient-domain list — not a modal. Built from existing tokens only.
 
-   It renders as a flex child of .pd-cond-head: order:1 + a full
-   flex-basis make it wrap onto its own line, full width, beneath the
-   header controls, leaving the policy draft visible. Outside a flex
-   parent (e.g. in tests) it simply falls back to a full-width block.
+   It renders as a flex child of its bar: order:1 + a full flex-basis
+   make it wrap onto its own line, full width, beneath the entry-point
+   controls. Outside a flex parent (e.g. in tests) it simply falls back
+   to a full-width block.
 
    Containment: the panel is viewport-bounded (max-height) and owns its
    scroll. The head and foot are pinned (flex-shrink:0) while .cf-body is the
    single internal scroll region, so the inputs, the Find button, the results
    and the privacy note stay reachable however many results come back — and the
-   foot's Add control is never pushed off-screen. Paired with .col-policy's own
-   overflow-y:auto, the in-flow panel is never clipped by the column's cap.
+   foot's Add control is never pushed off-screen. Paired with the library
+   column's own overflow, the in-flow panel is never clipped by the column cap.
    ============================================================ */
 .cf-trigger { flex-shrink: 0; }
 .cf-chev { opacity: .7; transition: transform .15s ease; }

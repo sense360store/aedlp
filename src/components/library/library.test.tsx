@@ -140,13 +140,63 @@ describe("LibraryRow previews and expansion", () => {
     // The curate-before-deploy steer is visible so the user curates first.
     expect(insp.textContent).toContain("Remove your own organisation");
 
-    // Copy value mirrors the other recipient detectors: the full domain list.
+    // Copy-all mirrors the other recipient detectors: the full domain list.
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
     const expected = d.conditionType === "recipient_domain" ? d.domains.join("\n") : "";
-    fireEvent.click(within(insp).getByRole("button", { name: "Copy list" }));
+    fireEvent.click(within(insp).getByRole("button", { name: "Copy all domains" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expected));
+  });
+
+  it("gives a recipient detector select-all + copy-all controls in its expanded view", async () => {
+    const d = det("rcp-competitors-aerospace");
+    if (d.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
+    const { container } = render(<LibraryRow d={d} added={false} onToggle={() => {}} onTest={() => {}} />);
+    fireEvent.click(container.querySelector(".lib-row-main")!);
+    const insp = container.querySelector(".inspector") as HTMLElement;
+
+    // Defaults to all selected, so copy-all and copy-selected agree until you deselect.
+    expect(within(insp).getByText(`${d.domains.length}/${d.domains.length} selected`)).toBeTruthy();
+    const chips = insp.querySelectorAll<HTMLButtonElement>(".prev-chip.pick");
+    expect(chips).toHaveLength(d.domains.length);
+    expect(Array.from(chips).every((c) => c.getAttribute("aria-pressed") === "true")).toBe(true);
+
+    // Deselecting one chip surfaces a "Copy selected" affordance for the subset.
+    fireEvent.click(chips[0]);
+    expect(within(insp).getByText(`${d.domains.length - 1}/${d.domains.length} selected`)).toBeTruthy();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    fireEvent.click(within(insp).getByRole("button", { name: `Copy selected (${d.domains.length - 1})` }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(d.domains.slice(1).join("\n")));
+
+    // Copy-all still copies the FULL list regardless of the selection.
+    fireEvent.click(within(insp).getByRole("button", { name: "Copy all domains" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(d.domains.join("\n")));
+
+    // Deselect-all clears, select-all restores the whole set.
+    fireEvent.click(within(insp).getByRole("button", { name: "Select all" }));
+    expect(within(insp).getByText(`${d.domains.length}/${d.domains.length} selected`)).toBeTruthy();
+  });
+
+  it("expands a long recipient list so the whole set is visible, not just the first chips", () => {
+    const d = det("rcp-freemail");
+    if (d.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
+    expect(d.domains.length).toBeGreaterThan(60);
+    const { container } = render(<LibraryRow d={d} added={false} onToggle={() => {}} onTest={() => {}} />);
+    fireEvent.click(container.querySelector(".lib-row-main")!);
+    const insp = container.querySelector(".inspector") as HTMLElement;
+
+    // Collapsed: a capped number of chips plus a "+N domains — show all" control.
+    expect(insp.querySelectorAll(".prev-chip.pick")).toHaveLength(60);
+    const more = within(insp).getByRole("button", { name: /show all/i });
+    expect(more.textContent).toContain(`+${d.domains.length - 60}`);
+
+    // Expanded: every domain renders so it can be seen and copied.
+    fireEvent.click(more);
+    expect(insp.querySelectorAll(".prev-chip.pick")).toHaveLength(d.domains.length);
+    expect(within(insp).getByRole("button", { name: "Show fewer" })).toBeTruthy();
   });
 
   it("renders a serialized keyword_pattern preview", () => {
