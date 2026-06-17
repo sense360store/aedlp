@@ -3,10 +3,11 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-// The real parser is covered in src/lib/extract.test.ts against the sample
-// workbook. Here we mock it so the page reaches the ready state deterministically
-// (no dependency on jsdom File.arrayBuffer) and we can test the curation UI.
-vi.mock("../lib/extract", () => {
+// The real parser/worker is covered in src/lib/xlsx-stream.test.ts against the
+// sample workbook. Here we mock the worker client so the page reaches the ready
+// state deterministically (no real Worker in jsdom) and we can test the
+// curation UI. isCSV/emailDomain come from the real (pure) extract module.
+vi.mock("../lib/parseClient", () => {
   const makeParsed = () => ({
     map: new Map([
       ["soteria365.com", { types: new Map([["external", 1]]), total: 1 }],
@@ -21,19 +22,10 @@ vi.mock("../lib/extract", () => {
     sheetName: "unauthorised_contacts",
   });
   return {
-    TARGET_SHEET: /unauth/i,
-    isCSV: () => false,
-    parseCSV: vi.fn(),
-    readSheetNames: vi.fn(async () => ({ names: ["unauthorised_contacts"], buf: new Uint8Array() })),
-    pickSheet: () => "unauthorised_contacts",
-    parseWorkbook: vi.fn(async () => makeParsed()),
-    emailDomain: (s: unknown) => {
-      const v = String(s ?? "").trim().toLowerCase();
-      const at = v.lastIndexOf("@");
-      if (at < 0) return "";
-      const d = v.slice(at + 1);
-      return d.includes(".") ? d : "";
-    },
+    parseFile: vi.fn(async (_file: File, opts?: { onProgress?: (p: number) => void }) => {
+      opts?.onProgress?.(1);
+      return { kind: "result", result: makeParsed() };
+    }),
   };
 });
 

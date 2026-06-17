@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { emailDomain, isCSV, parseCSV, readSheetNames, parseWorkbook, pickSheet, TARGET_SHEET } from "./extract";
-
-const SAMPLE_XLSX = "handoff/aedlp-policy-creator/project/uploads/enforcer-simulated testnodata 2026-05-12.xlsx";
+import { emailDomain, isCSV, parseCSV, pickSheet, TARGET_SHEET } from "./extract";
 
 describe("emailDomain", () => {
   it("extracts and normalises the domain", () => {
@@ -26,6 +23,17 @@ describe("isCSV", () => {
     expect(isCSV(new File([""], "export.CSV"))).toBe(true);
     expect(isCSV(new File([""], "data", { type: "text/csv" }))).toBe(true);
     expect(isCSV(new File([""], "export.xlsx"))).toBe(false);
+  });
+});
+
+describe("pickSheet", () => {
+  it("prefers a sheet matching /unauth/i, else honours a preferred name, else the first", () => {
+    const names = ["breaches", "unauthorised_contacts", "high_level_statistics"];
+    expect(pickSheet(names)).toBe("unauthorised_contacts");
+    expect(TARGET_SHEET.test(pickSheet(names))).toBe(true);
+    expect(pickSheet(["a", "b", "c"])).toBe("a");
+    expect(pickSheet(["a", "b", "c"], "b")).toBe("b");
+    expect(pickSheet(["a", "b", "c"], "missing")).toBe("a");
   });
 });
 
@@ -57,27 +65,5 @@ describe("parseCSV (streaming)", () => {
     const csv = "a,b,c\n1,2,3\n";
     const file = new File([csv], "bad.csv", { type: "text/csv" });
     await expect(parseCSV(file)).rejects.toThrow(/contact_type/);
-  });
-});
-
-describe("parseWorkbook (SheetJS) on the sample enforcer export", () => {
-  const fileFromSample = () => new File([readFileSync(SAMPLE_XLSX)], "enforcer.xlsx");
-
-  it("finds the unauthorised_contacts sheet", async () => {
-    const { names } = await readSheetNames(fileFromSample());
-    expect(names).toContain("unauthorised_contacts");
-    const target = pickSheet(names);
-    expect(TARGET_SHEET.test(target)).toBe(true);
-    expect(target).toBe("unauthorised_contacts");
-  });
-
-  it("parses rows, unique domains and type totals", async () => {
-    const res = await parseWorkbook(fileFromSample(), "unauthorised_contacts");
-    expect(res.sheetName).toBe("unauthorised_contacts");
-    expect(res.scanned).toBe(3);
-    expect(res.map.size).toBe(3);
-    expect([...res.map.keys()].sort()).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
-    expect(res.typeTotals.get("external")).toBe(1);
-    expect(res.typeTotals.get("freemail")).toBe(2);
   });
 });
