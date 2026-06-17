@@ -34,7 +34,9 @@ import handler, {
   cleanDomain,
   parseModelSuggestions,
   stripFences,
+  verifySuggestions,
   type CompetitorsResponse,
+  type RawSuggestion,
 } from "./competitors";
 
 /* ---- request / response test doubles ---- */
@@ -262,5 +264,44 @@ describe("handler — happy path", () => {
     const { res, state } = makeRes();
     await handler(makeReq({ headers: goodHeaders, body: { company: "Initech" } }), res);
     expect(state.statusCode).toBe(502);
+  });
+
+  it("degrades to a clean 200 with a 'narrow your query' note when the search never completes", async () => {
+    // The web-search loop keeps pausing and never returns a final answer; the
+    // pause-guard stops it. Rather than a 504, the handler returns 200 with no
+    // suggestions and a note nudging the user toward a narrower query.
+    anthropicCreate.mockResolvedValue({ stop_reason: "pause_turn", content: [] });
+    const { res, state } = makeRes();
+    await handler(makeReq({ headers: goodHeaders, body: { company: "Globex" } }), res);
+
+    expect(state.statusCode).toBe(200);
+    // Initial call + 4 resumes before the guard trips.
+    expect(anthropicCreate).toHaveBeenCalledTimes(5);
+    const payload = state.body as CompetitorsResponse;
+    expect(payload.suggestions).toEqual([]);
+    expect(payload.notes).toMatch(/narrow|too long/i);
+  });
+});
+
+describe("verifySuggestions — non-blocking", () => {
+  const item: RawSuggestion = {
+    name: "Globex",
+    domain: "globex.example",
+    confidence: "high",
+    rationale: "rival",
+  };
+
+  it("skips DNS entirely and flags unverified when the budget is exhausted", async () => {
+    const out = await verifySuggestions([item], 0);
+    expect(out).toEqual([{ ...item, verified: false }]);
+    // With no budget, verification must not even touch DNS — it can never block.
+    expect(resolveMx).not.toHaveBeenCalled();
+    expect(resolve4).not.toHaveBeenCalled();
+  });
+
+  it("verifies in parallel and never drops suggestions when there is budget", async () => {
+    const out = await verifySuggestions([item], 5000);
+    expect(out).toEqual([{ ...item, verified: true }]);
+    expect(resolveMx).toHaveBeenCalledTimes(1);
   });
 });

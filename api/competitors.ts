@@ -12,6 +12,12 @@
    for review and the user curates them into a recipient-domain
    condition by hand.
 
+   Time budget: vercel.json caps this function at 60s (the Hobby
+   ceiling). We finish well inside that — the handler runs under an
+   internal ~45s deadline (AbortController) and, if it fires, returns a
+   clean partial JSON response asking for a narrower query rather than
+   letting Vercel hard-kill the request with a 504.
+
    Secrets used (server env, never echoed):
      - ANTHROPIC_API_KEY            Claude API key
      - COMPETITORS_SHARED_SECRET    must match the x-aedlp-key header
@@ -50,11 +56,26 @@ export interface CompetitorsResponse {
 
 /* ---------------- tunables ---------------- */
 
-const MODEL = "claude-sonnet-4-6";
+// Lookup model. This is a shallow "search a little, extract domains" task, so we
+// default to the fast, cheap Haiku tier to stay well inside the time budget. Swap
+// to "claude-sonnet-4-6" if you need deeper research and can spend the latency —
+// it's the only line you need to change.
+const MODEL = "claude-haiku-4-5";
+
+const MAX_COMPETITORS = 12; // cap how many suggestions we ask for / return
+const MAX_OUTPUT_TOKENS = 1536; // modest output cap — enough for ~12 compact rows
+const MAX_SEARCH_USES = 4; // cap web-search effort (a few queries, not exhaustive)
 const MAX_DOMAINS_VERIFIED = 15; // bound the verification work
 const RATE_PER_MINUTE = 10;
 const RATE_PER_DAY = 100;
-const DNS_TIMEOUT_MS = 2500;
+const DNS_TIMEOUT_MS = 1500; // short per-domain DNS timeout
+
+// Internal time budget, all measured from the start of the work phase. We keep a
+// hard deadline below Vercel's 60s ceiling and reserve room to verify + respond,
+// so the function returns a clean payload instead of timing out.
+const OVERALL_BUDGET_MS = 45_000; // hard internal deadline (AbortController)
+const VERIFY_BUDGET_MS = 8_000; // overall cap on DNS verification
+const RESPONSE_RESERVE_MS = 1_500; // headroom to serialize + send the response
 
 /* ---------------- input validation ---------------- */
 
@@ -226,56 +247,82 @@ export async function checkRateLimit(redis: Redis, ip: string): Promise<RateVerd
 
 /* ---------------- domain verification ---------------- */
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("dns timeout")), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e: unknown) => {
-        clearTimeout(t);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      },
-    );
+/**
+ * Lightweight liveness check: an MX record, else any A/AAAA record. Both lookups
+ * share a single per-domain timeout — on timeout (or any error) it resolves false
+ * (treated as "unverified") and never rejects, so it is safe under Promise.allSettled.
+ */
+export function verifyDomain(domain: string, timeoutMs: number = DNS_TIMEOUT_MS): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    const settle = (v: boolean) => {
+      clearTimeout(timer);
+      resolve(v);
+    };
+    void (async () => {
+      try {
+        const mx = await dns.resolveMx(domain);
+        if (Array.isArray(mx) && mx.length > 0) return settle(true);
+      } catch {
+        /* no MX — fall through to an address lookup */
+      }
+      try {
+        const addrs = await dns.resolve(domain);
+        settle(Array.isArray(addrs) && addrs.length > 0);
+      } catch {
+        settle(false);
+      }
+    })();
   });
 }
 
-/** Lightweight liveness check: an MX record, else any A/AAAA record. */
-export async function verifyDomain(domain: string): Promise<boolean> {
-  try {
-    const mx = await withTimeout(dns.resolveMx(domain), DNS_TIMEOUT_MS);
-    if (Array.isArray(mx) && mx.length > 0) return true;
-  } catch {
-    /* no MX — fall through to address lookup */
-  }
-  try {
-    const addrs = await withTimeout(dns.resolve(domain), DNS_TIMEOUT_MS);
-    return Array.isArray(addrs) && addrs.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-/** Verify up to MAX_DOMAINS_VERIFIED suggestions. Unverified ones are flagged, never dropped. */
-export async function verifySuggestions(items: RawSuggestion[]): Promise<CompetitorSuggestion[]> {
+/**
+ * Verify up to MAX_DOMAINS_VERIFIED domains in parallel, but never let
+ * verification push past its time budget. Every suggestion starts flagged
+ * unverified and is flipped to verified only if its DNS check resolves in time —
+ * so a slow or exhausted budget degrades to "unverified", never to a hang. Nothing
+ * is ever dropped: suggestions beyond the cap stay, flagged unverified.
+ */
+export async function verifySuggestions(
+  items: RawSuggestion[],
+  budgetMs: number,
+): Promise<CompetitorSuggestion[]> {
   const capped = items.slice(0, MAX_DOMAINS_VERIFIED);
-  const verified = await Promise.all(
-    capped.map(async (s) => ({ ...s, verified: await verifyDomain(s.domain) })),
-  );
-  // Keep any beyond the cap, marked unverified so nothing silently disappears.
   const overflow = items.slice(MAX_DOMAINS_VERIFIED).map((s) => ({ ...s, verified: false }));
-  return [...verified, ...overflow];
+  const results: CompetitorSuggestion[] = capped.map((s) => ({ ...s, verified: false }));
+
+  if (budgetMs > 0 && capped.length > 0) {
+    const perDomain = Math.min(DNS_TIMEOUT_MS, budgetMs);
+    const checks = capped.map((s, i) =>
+      verifyDomain(s.domain, perDomain).then(
+        (verified) => {
+          results[i] = { ...results[i], verified };
+        },
+        () => {
+          /* leave it flagged unverified */
+        },
+      ),
+    );
+    // Overall cap: whichever settles first wins — all the checks, or the budget.
+    let capTimer: ReturnType<typeof setTimeout> | undefined;
+    const cap = new Promise<void>((resolve) => {
+      capTimer = setTimeout(resolve, budgetMs);
+    });
+    await Promise.race([Promise.allSettled(checks).then(() => undefined), cap]);
+    clearTimeout(capTimer);
+  }
+
+  return [...results, ...overflow];
 }
 
 /* ---------------- Claude call ---------------- */
 
 const SYSTEM_PROMPT = [
   "You research a named company's main competitors and return their PRIMARY corporate email domains.",
-  "Ground every answer in live web search results, not prior memory or assumptions.",
+  "Work quickly: run a brief web search (a few queries at most), then answer. Do NOT research exhaustively.",
   "Rules:",
-  "- Use the web_search tool to find current information before answering.",
+  "- Use the web_search tool to check current information, but stop after a few searches and answer with what you have.",
+  "- Return at most 12 competitors — the most significant ones first.",
   "- Return only primary corporate email domains (the domain a company uses for staff email and its main site), not marketing micro-sites or country sub-domains.",
   "- Do not invent domains. If unsure of a competitor's real domain, omit it or mark its confidence low.",
   "- Exclude the named company itself.",
@@ -288,7 +335,7 @@ export function buildUserPrompt(company: string, industry?: string): string {
   return (
     `Company: ${company}` +
     (industry ? `\nIndustry: ${industry}` : "") +
-    `\n\nResearch this company's main competitors and return their primary corporate email domains as a strict JSON array.`
+    `\n\nResearch this company's main competitors and return their primary corporate email domains as a strict JSON array (at most 12 entries).`
   );
 }
 
@@ -301,40 +348,76 @@ export function extractText(content: Anthropic.ContentBlock[]): string {
     .trim();
 }
 
+/** The shared, tightly-bounded request shape for the lookup. */
+function buildRequest(messages: Anthropic.MessageParam[]): Anthropic.MessageCreateParamsNonStreaming {
+  return {
+    model: MODEL,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    system: SYSTEM_PROMPT,
+    // Cap the web-search effort; the prompt also tells the model to stop early.
+    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: MAX_SEARCH_USES }],
+    messages,
+  };
+}
+
+interface ResearchOutcome {
+  suggestions: RawSuggestion[];
+  /** True if we never reached a completed answer (deadline / pause-guard hit). */
+  stoppedEarly: boolean;
+}
+
 async function researchCompetitors(
   anthropic: Anthropic,
   company: string,
   industry: string | undefined,
-): Promise<RawSuggestion[]> {
+  signal: AbortSignal,
+  deadlineAt: number,
+): Promise<ResearchOutcome> {
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: buildUserPrompt(company, industry) },
   ];
 
-  let response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    thinking: { type: "adaptive", display: "omitted" },
-    system: SYSTEM_PROMPT,
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 6 }],
-    messages,
-  });
+  let response = await anthropic.messages.create(buildRequest(messages), { signal, maxRetries: 1 });
 
-  // Server-side web-search loop can pause; resume until it completes.
+  // The server-side web-search loop can pause; resume until it completes — but
+  // stop once the research budget is spent so there's time left to verify + respond.
   let guard = 0;
-  while (response.stop_reason === "pause_turn" && guard < 4) {
+  while (
+    response.stop_reason === "pause_turn" &&
+    guard < 4 &&
+    !signal.aborted &&
+    Date.now() < deadlineAt
+  ) {
     guard += 1;
     messages.push({ role: "assistant", content: response.content });
-    response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      thinking: { type: "adaptive", display: "omitted" },
-      system: SYSTEM_PROMPT,
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 6 }],
-      messages,
-    });
+    response = await anthropic.messages.create(buildRequest(messages), { signal, maxRetries: 1 });
   }
 
-  return parseModelSuggestions(extractText(response.content));
+  // Still paused here means we bailed on the budget/guard before a final answer —
+  // treat that like a timeout so the user gets the "narrow your query" nudge.
+  const stoppedEarly = response.stop_reason === "pause_turn";
+  const suggestions = parseModelSuggestions(extractText(response.content)).slice(0, MAX_COMPETITORS);
+  return { suggestions, stoppedEarly };
+}
+
+/** Compose the review note shown beneath the results (or the timed-out fallback). */
+function buildNotes(
+  suggestions: CompetitorSuggestion[],
+  verifiedCount: number,
+  timedOut: boolean,
+): string {
+  if (timedOut) {
+    return suggestions.length
+      ? `The lookup ran long, so it returned early with ${suggestions.length} partial ` +
+          `result${suggestions.length === 1 ? "" : "s"}. For a complete list, try a narrower or more ` +
+          `specific company name. Domains are model-generated from web search — review before adding to a policy.`
+      : "The lookup took too long and was stopped before any results came back. Try a narrower, more specific company name (and add an industry), then search again.";
+  }
+  return suggestions.length
+    ? `Found ${suggestions.length} competitor suggestion${suggestions.length === 1 ? "" : "s"}` +
+        ` (${verifiedCount} with a live mail/DNS record). Domains are model-generated from web search —` +
+        ` review and curate before adding to a policy.`
+    : "No competitor suggestions were returned. Try a more specific company name or add an industry.";
 }
 
 /* ---------------- handler ---------------- */
@@ -378,26 +461,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return send(res, 429, { error: `Rate limit reached (${window}). Please wait and try again.` });
   }
 
-  // 5 + 6. Research via Claude, verify domains, respond.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return send(res, 503, { error: "Lookup is temporarily unavailable. Please try again shortly." });
+  }
+
+  // 5 + 6. Research via Claude under an internal deadline, verify domains, respond.
+  // The AbortController fires at OVERALL_BUDGET_MS and cancels the in-flight Claude
+  // call; we then return a clean partial response instead of a Vercel 504.
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(() => controller.abort(), OVERALL_BUDGET_MS);
   try {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return send(res, 503, { error: "Lookup is temporarily unavailable. Please try again shortly." });
-    }
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const raw = await researchCompetitors(anthropic, company, industry);
-    const suggestions = await verifySuggestions(raw);
+    // Reserve time for verification + sending the response before the hard deadline.
+    const researchDeadlineAt = startedAt + (OVERALL_BUDGET_MS - VERIFY_BUDGET_MS - RESPONSE_RESERVE_MS);
+
+    let raw: RawSuggestion[] = [];
+    let timedOut = false;
+    const searchStart = Date.now();
+    try {
+      const outcome = await researchCompetitors(
+        anthropic,
+        company,
+        industry,
+        controller.signal,
+        researchDeadlineAt,
+      );
+      raw = outcome.suggestions;
+      timedOut = outcome.stoppedEarly;
+    } catch (err) {
+      // Our deadline firing is an expected outcome — degrade gracefully. Any other
+      // failure is a real upstream error and bubbles to the 502 path below.
+      if (controller.signal.aborted) timedOut = true;
+      else throw err;
+    }
+    const searchMs = Date.now() - searchStart;
+
+    // Verify with whatever time is left; never push past the deadline.
+    const verifyStart = Date.now();
+    const remaining = OVERALL_BUDGET_MS - (Date.now() - startedAt) - RESPONSE_RESERVE_MS;
+    const verifyBudget = controller.signal.aborted ? 0 : Math.min(VERIFY_BUDGET_MS, Math.max(0, remaining));
+    const suggestions = await verifySuggestions(raw, verifyBudget);
+    const verifyMs = Date.now() - verifyStart;
 
     const verifiedCount = suggestions.filter((s) => s.verified).length;
-    const notes = suggestions.length
-      ? `Found ${suggestions.length} competitor suggestion${suggestions.length === 1 ? "" : "s"}` +
-        ` (${verifiedCount} with a live mail/DNS record). Domains are model-generated from web search —` +
-        ` review and curate before adding to a policy.`
-      : "No competitor suggestions were returned. Try a more specific company name or add an industry.";
+    // Timing goes to the function logs so we can see where the budget is spent.
+    console.log(
+      `[competitors] model=${MODEL} search=${searchMs}ms verify=${verifyMs}ms ` +
+        `total=${Date.now() - startedAt}ms suggestions=${suggestions.length} ` +
+        `verified=${verifiedCount} timedOut=${timedOut}`,
+    );
 
-    const payload: CompetitorsResponse = { suggestions, notes };
+    const payload: CompetitorsResponse = {
+      suggestions,
+      notes: buildNotes(suggestions, verifiedCount, timedOut),
+    };
     return send(res, 200, payload);
   } catch {
     // Never leak the request or key in errors.
     return send(res, 502, { error: "The competitor lookup failed. Please try again." });
+  } finally {
+    clearTimeout(deadlineTimer);
   }
 }
