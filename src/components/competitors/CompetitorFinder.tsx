@@ -230,7 +230,11 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
               <div className="cf-empty">
                 <Icon name="search" size={22} />
                 <div className="cf-empty-t">No competitor suggestions</div>
-                <div className="small muted">Try a more specific company name, or add an industry.</div>
+                {/* Prefer the server's note (e.g. a "took too long — narrow your query"
+                    message) when present; otherwise show the standard hint. */}
+                <div className="small muted">
+                  {notes || "Try a more specific company name, or add an industry."}
+                </div>
               </div>
             )}
 
