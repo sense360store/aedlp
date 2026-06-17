@@ -3,20 +3,30 @@
 
    This is the ONE backend endpoint in an otherwise fully static,
    client-side app. It takes a company name (and optional industry),
-   asks Claude — grounded on live web search — for that company's main
-   competitors and their primary corporate email domains, verifies the
-   domains server-side, and returns reviewable suggestions.
+   asks Claude — from its own knowledge, no web search — for that
+   company's main competitors and their primary corporate email
+   domains, verifies those domains server-side by DNS, and returns
+   reviewable suggestions.
 
-   The only data that leaves the browser is the company name the user
-   types. Nothing here is auto-applied: the front end shows the results
-   for review and the user curates them into a recipient-domain
-   condition by hand.
+   Why no web search: grounding the lookup on live web search did not
+   finish inside Vercel's 60s Hobby ceiling, so the function kept
+   aborting at its internal deadline and returning empty results. A
+   plain model-knowledge call answers in a few seconds. DNS
+   verification (below) is now the primary safeguard against a wrong or
+   hallucinated domain — every suggestion is flagged verified or not,
+   and unverified rows are kept (flagged), never dropped.
+
+   The only data that leaves the browser is the company name (and
+   optional industry) the user types. Nothing here is auto-applied: the
+   front end shows the results for review and the user curates them into
+   a recipient-domain condition by hand.
 
    Time budget: vercel.json caps this function at 60s (the Hobby
-   ceiling). We finish well inside that — the handler runs under an
-   internal ~45s deadline (AbortController) and, if it fires, returns a
-   clean partial JSON response asking for a narrower query rather than
-   letting Vercel hard-kill the request with a 504.
+   ceiling). The model call returns well inside that; the handler still
+   runs under an internal ~45s deadline (AbortController) as a backstop
+   and, if it ever fires, returns a clean partial JSON response asking
+   for a narrower query rather than letting Vercel hard-kill it with a
+   504.
 
    Secrets used (server env, never echoed):
      - ANTHROPIC_API_KEY            Claude API key
@@ -56,20 +66,16 @@ export interface CompetitorsResponse {
 
 /* ---------------- tunables ---------------- */
 
-// Lookup model. We call the web_search_20260209 tool below, whose built-in
-// dynamic filtering (the model writes and runs code to trim search results
-// before they reach the context) is only supported on Sonnet 4.6, Opus 4.6+
-// and Fable 5 — NOT on the Haiku tier. Pairing that tool version with a Haiku
-// model is rejected up front with a 400, which is what was surfacing as an
-// instant 502. Sonnet 4.6 supports the tool and still returns well inside the
-// time budget. (If you ever move back to a Haiku model, you MUST also drop the
-// tool down to the basic "web_search_20250305" version, which has no dynamic
-// filtering and works on every model.)
+// Lookup model. The default path uses no tools — just the model's own
+// knowledge — so any current model works. Sonnet 4.6 is the pick for its
+// stronger recall of real corporate domains (fewer wrong guesses for DNS
+// verification to catch) while still answering in a few seconds. For a faster,
+// cheaper lookup, switch to the dated Haiku id "claude-haiku-4-5-20251001" —
+// always the dated id, never the bare "claude-haiku-4-5".
 const MODEL = "claude-sonnet-4-6";
 
 const MAX_COMPETITORS = 12; // cap how many suggestions we ask for / return
 const MAX_OUTPUT_TOKENS = 1536; // modest output cap — enough for ~12 compact rows
-const MAX_SEARCH_USES = 4; // cap web-search effort (a few queries, not exhaustive)
 const MAX_DOMAINS_VERIFIED = 15; // bound the verification work
 const RATE_PER_MINUTE = 10;
 const RATE_PER_DAY = 100;
@@ -323,13 +329,12 @@ export async function verifySuggestions(
 /* ---------------- Claude call ---------------- */
 
 const SYSTEM_PROMPT = [
-  "You research a named company's main competitors and return their PRIMARY corporate email domains.",
-  "Work quickly: run a brief web search (a few queries at most), then answer. Do NOT research exhaustively.",
+  "You identify a named company's main competitors and return their PRIMARY corporate email domains, using only your own knowledge.",
+  "Answer directly and quickly — do not use any tools or web search, and do not stall.",
   "Rules:",
-  "- Use the web_search tool to check current information, but stop after a few searches and answer with what you have.",
   "- Return at most 12 competitors — the most significant ones first.",
   "- Return only primary corporate email domains (the domain a company uses for staff email and its main site), not marketing micro-sites or country sub-domains.",
-  "- Do not invent domains. If unsure of a competitor's real domain, omit it or mark its confidence low.",
+  "- Do not invent domains. If you are unsure of a competitor's real domain, omit that competitor or mark its confidence low — the domains are DNS-verified downstream, so a wrong guess will be flagged.",
   "- Exclude the named company itself.",
   "- For each competitor give: name, domain, confidence (exactly one of high, medium, low), and a one-line rationale.",
   "Respond with STRICT JSON ONLY: a single JSON array of objects with keys name, domain, confidence, rationale.",
@@ -340,7 +345,7 @@ export function buildUserPrompt(company: string, industry?: string): string {
   return (
     `Company: ${company}` +
     (industry ? `\nIndustry: ${industry}` : "") +
-    `\n\nResearch this company's main competitors and return their primary corporate email domains as a strict JSON array (at most 12 entries).`
+    `\n\nFrom your own knowledge, list this company's main competitors and their primary corporate email domains as a strict JSON array (at most 12 entries). Exclude ${company} itself.`
   );
 }
 
@@ -353,60 +358,37 @@ export function extractText(content: Anthropic.ContentBlock[]): string {
     .trim();
 }
 
-/** The shared, tightly-bounded request shape for the lookup. */
+/** The shared, tightly-bounded request shape for the lookup (no tools — model knowledge only). */
 function buildRequest(messages: Anthropic.MessageParam[]): Anthropic.MessageCreateParamsNonStreaming {
   return {
     model: MODEL,
     max_tokens: MAX_OUTPUT_TOKENS,
     system: SYSTEM_PROMPT,
-    // Cap the web-search effort; the prompt also tells the model to stop early.
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: MAX_SEARCH_USES }],
     messages,
   };
 }
 
-interface ResearchOutcome {
-  suggestions: RawSuggestion[];
-  /** True if we never reached a completed answer (deadline / pause-guard hit). */
-  stoppedEarly: boolean;
-}
-
+/**
+ * Ask the model — from its own knowledge, no tools — for the company's
+ * competitors and their primary corporate domains, and parse the strict-JSON
+ * reply. A single, fast request: the only thing that can cut it short is the
+ * caller's abort signal (our internal deadline), handled one level up.
+ */
 async function researchCompetitors(
   anthropic: Anthropic,
   company: string,
   industry: string | undefined,
   signal: AbortSignal,
-  deadlineAt: number,
-): Promise<ResearchOutcome> {
+): Promise<RawSuggestion[]> {
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: buildUserPrompt(company, industry) },
   ];
-
-  let response = await anthropic.messages.create(buildRequest(messages), { signal, maxRetries: 1 });
-
-  // The server-side web-search loop can pause; resume until it completes — but
-  // stop once the research budget is spent so there's time left to verify + respond.
-  let guard = 0;
-  while (
-    response.stop_reason === "pause_turn" &&
-    guard < 4 &&
-    !signal.aborted &&
-    Date.now() < deadlineAt
-  ) {
-    guard += 1;
-    messages.push({ role: "assistant", content: response.content });
-    response = await anthropic.messages.create(buildRequest(messages), { signal, maxRetries: 1 });
-  }
-
-  // Still paused here means we bailed on the budget/guard before a final answer —
-  // treat that like a timeout so the user gets the "narrow your query" nudge.
-  const stoppedEarly = response.stop_reason === "pause_turn";
-  const suggestions = parseModelSuggestions(extractText(response.content)).slice(0, MAX_COMPETITORS);
-  return { suggestions, stoppedEarly };
+  const response = await anthropic.messages.create(buildRequest(messages), { signal, maxRetries: 1 });
+  return parseModelSuggestions(extractText(response.content)).slice(0, MAX_COMPETITORS);
 }
 
 /** Compose the review note shown beneath the results (or the timed-out fallback). */
-function buildNotes(
+export function buildNotes(
   suggestions: CompetitorSuggestion[],
   verifiedCount: number,
   timedOut: boolean,
@@ -415,12 +397,12 @@ function buildNotes(
     return suggestions.length
       ? `The lookup ran long, so it returned early with ${suggestions.length} partial ` +
           `result${suggestions.length === 1 ? "" : "s"}. For a complete list, try a narrower or more ` +
-          `specific company name. Domains are model-generated from web search — review before adding to a policy.`
+          `specific company name. Domains are model-suggested and DNS-checked — review before adding to a policy.`
       : "The lookup took too long and was stopped before any results came back. Try a narrower, more specific company name (and add an industry), then search again.";
   }
   return suggestions.length
     ? `Found ${suggestions.length} competitor suggestion${suggestions.length === 1 ? "" : "s"}` +
-        ` (${verifiedCount} with a live mail/DNS record). Domains are model-generated from web search —` +
+        ` (${verifiedCount} with a live mail/DNS record). Domains are model-suggested and DNS-checked —` +
         ` review and curate before adding to a policy.`
     : "No competitor suggestions were returned. Try a more specific company name or add an industry.";
 }
@@ -524,32 +506,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const deadlineTimer = setTimeout(() => controller.abort(), abortAfterMs);
   try {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    // Reserve time for verification + sending the response before the hard deadline.
-    // Floor the research window at 1s so an elapsed/too-small budget can never make
-    // the lookup bail before it has issued a single request.
-    const researchDeadlineAt =
-      startedAt + Math.max(1_000, abortAfterMs - VERIFY_BUDGET_MS - RESPONSE_RESERVE_MS);
 
     let raw: RawSuggestion[] = [];
     let timedOut = false;
-    const searchStart = Date.now();
+    const lookupStart = Date.now();
     try {
-      const outcome = await researchCompetitors(
-        anthropic,
-        company,
-        industry,
-        controller.signal,
-        researchDeadlineAt,
-      );
-      raw = outcome.suggestions;
-      timedOut = outcome.stoppedEarly;
+      raw = await researchCompetitors(anthropic, company, industry, controller.signal);
     } catch (err) {
       // Our deadline firing is an expected outcome — degrade gracefully. Any other
       // failure is a real upstream error and bubbles to the 502 path below.
       if (controller.signal.aborted) timedOut = true;
       else throw err;
     }
-    const searchMs = Date.now() - searchStart;
+    const lookupMs = Date.now() - lookupStart;
 
     // Verify with whatever time is left; never push past the deadline.
     const verifyStart = Date.now();
@@ -561,7 +530,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const verifiedCount = suggestions.filter((s) => s.verified).length;
     // Timing goes to the function logs so we can see where the budget is spent.
     console.log(
-      `[competitors] model=${MODEL} search=${searchMs}ms verify=${verifyMs}ms ` +
+      `[competitors] model=${MODEL} lookup=${lookupMs}ms verify=${verifyMs}ms ` +
         `total=${Date.now() - startedAt}ms suggestions=${suggestions.length} ` +
         `verified=${verifiedCount} timedOut=${timedOut}`,
     );
