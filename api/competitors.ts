@@ -74,9 +74,20 @@ export interface CompetitorsResponse {
 // always the dated id, never the bare "claude-haiku-4-5".
 const MODEL = "claude-sonnet-4-6";
 
-const MAX_COMPETITORS = 12; // cap how many suggestions we ask for / return
-const MAX_OUTPUT_TOKENS = 1536; // modest output cap — enough for ~12 compact rows
-const MAX_DOMAINS_VERIFIED = 15; // bound the verification work
+// The single, easy-to-find ceiling on how many competitor suggestions we ask for
+// and return. It is a CEILING, not a target: the prompts below tell the model to
+// return only genuine competitors and never pad the list to reach it.
+const MAX_COMPETITORS = 30; // cap how many suggestions we ask for / return
+// Output cap sized for the ceiling: comfortably fits MAX_COMPETITORS compact rows
+// (name + domain + confidence + a one-line rationale) as strict JSON without
+// truncating. A real 30-row reply is ~1.5k tokens, so this leaves wide headroom
+// while staying small enough that generation finishes well inside the time budget.
+const MAX_OUTPUT_TOKENS = 4096;
+// Verify every suggestion we'd return. DNS checks run in parallel under
+// VERIFY_BUDGET_MS, so tracking the cap costs no extra wall-clock; keeping this at
+// the cap preserves the original behaviour where nothing is returned unverified
+// merely because the verification bound was lower than the list.
+const MAX_DOMAINS_VERIFIED = MAX_COMPETITORS; // bound the verification work
 const RATE_PER_MINUTE = 10;
 const RATE_PER_DAY = 100;
 const DNS_TIMEOUT_MS = 1500; // short per-domain DNS timeout
@@ -332,7 +343,8 @@ const SYSTEM_PROMPT = [
   "You identify a named company's main competitors and return their PRIMARY corporate email domains, using only your own knowledge.",
   "Answer directly and quickly — do not use any tools or web search, and do not stall.",
   "Rules:",
-  "- Return at most 12 competitors — the most significant ones first.",
+  `- Return at most ${MAX_COMPETITORS} competitors — the most significant ones first. This is a ceiling, not a target.`,
+  `- Return only genuine competitors. Never pad the list to reach ${MAX_COMPETITORS}: a short, accurate list is far better than a long one stretched with weak, tangential, or invented entries. Returning just two or three is correct when that is all there genuinely are.`,
   "- Return only primary corporate email domains (the domain a company uses for staff email and its main site), not marketing micro-sites or country sub-domains.",
   "- Do not invent domains. If you are unsure of a competitor's real domain, omit that competitor or mark its confidence low — the domains are DNS-verified downstream, so a wrong guess will be flagged.",
   "- Exclude the named company itself.",
@@ -345,7 +357,7 @@ export function buildUserPrompt(company: string, industry?: string): string {
   return (
     `Company: ${company}` +
     (industry ? `\nIndustry: ${industry}` : "") +
-    `\n\nFrom your own knowledge, list this company's main competitors and their primary corporate email domains as a strict JSON array (at most 12 entries). Exclude ${company} itself.`
+    `\n\nFrom your own knowledge, list this company's main competitors and their primary corporate email domains as a strict JSON array (at most ${MAX_COMPETITORS} entries — a ceiling, not a target; list only genuine competitors and do not pad). Exclude ${company} itself.`
   );
 }
 

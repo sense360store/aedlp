@@ -299,6 +299,56 @@ describe("handler — happy path", () => {
   });
 });
 
+describe("handler — competitor ceiling (raised to 30)", () => {
+  const makeItems = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      name: `Competitor ${i}`,
+      domain: `competitor${i}.example`,
+      confidence: "medium",
+      rationale: "Overlapping product line.",
+    }));
+
+  const modelReturns = (items: unknown[]) =>
+    anthropicCreate.mockResolvedValue({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: JSON.stringify(items) }],
+    });
+
+  it("returns a full 30-item reply without truncating, and DNS-verifies every row", async () => {
+    modelReturns(makeItems(30));
+    const { res, state } = makeRes();
+    await handler(makeReq({ headers: goodHeaders, body: { company: "Globex" } }), res);
+
+    expect(state.statusCode).toBe(200);
+    const payload = state.body as CompetitorsResponse;
+    expect(payload.suggestions).toHaveLength(30);
+    // Nothing is dropped or left unchecked: the verification bound tracks the cap,
+    // so all 30 are genuinely DNS-verified rather than auto-flagged unverified.
+    expect(payload.suggestions.every((s) => s.verified)).toBe(true);
+  });
+
+  it("enforces the ceiling: a longer reply is capped at 30, never more", async () => {
+    modelReturns(makeItems(40));
+    const { res, state } = makeRes();
+    await handler(makeReq({ headers: goodHeaders, body: { company: "Globex" } }), res);
+
+    const payload = state.body as CompetitorsResponse;
+    expect(payload.suggestions).toHaveLength(30);
+  });
+
+  it("raises the output-token budget and tells the model the cap is a ceiling, not a target", async () => {
+    const { res } = makeRes();
+    await handler(makeReq({ headers: goodHeaders, body: { company: "Globex" } }), res);
+
+    const request = anthropicCreate.mock.calls[0][0] as { max_tokens: number; system: string };
+    // Enough headroom for 30 compact rows with rationales (the old budget was 1536).
+    expect(request.max_tokens).toBeGreaterThanOrEqual(3000);
+    expect(request.system).toContain("30");
+    expect(request.system).toMatch(/ceiling, not a target/i);
+    expect(request.system).toMatch(/never pad/i);
+  });
+});
+
 describe("buildNotes", () => {
   const sample: CompetitorSuggestion = {
     name: "Globex",
