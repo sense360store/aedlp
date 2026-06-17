@@ -892,7 +892,7 @@ export const competitorPacks: RecipientDomainDetector[] = [
   rcp({ id: "rcp-competitors-aerospace", displayName: "Competitor Domains — Aerospace & Defence",
     aliases: ["aerospace competitors", "defence competitors", "defense primes", "a&d rivals"],
     description: "Recipient address on a major aerospace or defence company domain. Industry starting list, curate before use.",
-    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Aerospace & defense",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Aerospace & defense", industries: ["Aerospace & defense"],
     domains: [
       "boeing.com", "airbus.com", "lockheedmartin.com", "rtx.com", "northropgrumman.com",
       "gd.com", "gdit.com", "baesystems.com", "leonardo.com", "thalesgroup.com",
@@ -911,7 +911,7 @@ export const competitorPacks: RecipientDomainDetector[] = [
   rcp({ id: "rcp-competitors-financial", displayName: "Competitor Domains — Financial Services",
     aliases: ["bank competitors", "financial services rivals", "fs competitors", "investment bank domains"],
     description: "Recipient address on a major bank or asset manager domain. Industry starting list, curate before use.",
-    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Financial services",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Financial services", industries: ["Financial services"],
     domains: [
       "jpmorgan.com", "jpmorganchase.com", "chase.com", "bankofamerica.com", "citi.com",
       "wellsfargo.com", "gs.com", "morganstanley.com", "hsbc.com", "barclays.com",

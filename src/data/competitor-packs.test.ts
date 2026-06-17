@@ -102,21 +102,43 @@ describe("Competitor domain packs (batch 1)", () => {
     expect(AEDLP_DATA.industries).toContain("Aerospace & defense");
     expect(AEDLP_DATA.industries).toContain("Financial services");
     const live = (id: string) => AEDLP_DATA.detectors.find((d) => d.id === id)!;
-    expect(live("rcp-competitors-aerospace").industries).toContain("Aerospace & defense");
-    expect(live("rcp-competitors-financial").industries).toContain("Financial services");
+    // Scoped to their own industry only. The "Recipients & destinations" category
+    // default would otherwise inject "Cross-industry", which makes a detector
+    // match every industry filter — so pin the arrays exactly and assert the
+    // leak is absent.
+    expect(live("rcp-competitors-aerospace").industries).toEqual(["Aerospace & defense"]);
+    expect(live("rcp-competitors-financial").industries).toEqual(["Financial services"]);
+    for (const id of ["rcp-competitors-aerospace", "rcp-competitors-financial"]) {
+      expect(live(id).industries, `${id} must not be Cross-industry`).not.toContain("Cross-industry");
+    }
   });
 
-  it("returns each pack under its industry filter and the recipient type filter", () => {
-    const aeroIds = new Set(
-      filterDetectors(AEDLP_DATA.detectors, { industry: "Aerospace & defense" }).map((d) => d.id),
-    );
-    expect(aeroIds.has("rcp-competitors-aerospace")).toBe(true);
+  it("surfaces each pack ONLY under its own industry filter, never another", () => {
+    const idsFor = (industry: string) =>
+      new Set(filterDetectors(AEDLP_DATA.detectors, { industry }).map((d) => d.id));
 
-    const finIds = new Set(
-      filterDetectors(AEDLP_DATA.detectors, { industry: "Financial services" }).map((d) => d.id),
-    );
+    // Each pack appears under its own industry...
+    const aeroIds = idsFor("Aerospace & defense");
+    expect(aeroIds.has("rcp-competitors-aerospace")).toBe(true);
+    const finIds = idsFor("Financial services");
     expect(finIds.has("rcp-competitors-financial")).toBe(true);
 
+    // ...and NOT under the other pack's industry.
+    expect(finIds.has("rcp-competitors-aerospace"), "aerospace under Financial services").toBe(false);
+    expect(aeroIds.has("rcp-competitors-financial"), "financial under Aerospace & defense").toBe(false);
+
+    // Regression guard for the Cross-industry leak: before the explicit industries
+    // array, the "Recipients & destinations" category default injected
+    // "Cross-industry", and filterDetectors treats Cross-industry as matching
+    // every industry — so each pack showed up under unrelated filters (and under
+    // the Cross-industry filter itself). It must not.
+    for (const industry of ["Healthcare & life sciences", "Technology & SaaS", "Cross-industry"]) {
+      const ids = idsFor(industry);
+      expect(ids.has("rcp-competitors-aerospace"), `aerospace under ${industry}`).toBe(false);
+      expect(ids.has("rcp-competitors-financial"), `financial under ${industry}`).toBe(false);
+    }
+
+    // Both still group with the other recipient-domain detectors under the type filter.
     const recipientIds = new Set(
       filterDetectors(AEDLP_DATA.detectors, { type: "recipient_domain" }).map((d) => d.id),
     );
