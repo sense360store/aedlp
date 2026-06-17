@@ -88,6 +88,14 @@ describe("PolicyCreator page", () => {
     expect(container.querySelector(".cf-overlay")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(container.querySelector(".policy-draft")).not.toBeNull();
+
+    // It is contained by the scrollable policy column and carries its own
+    // pinned-foot / scrolling-body structure, so it can never overflow the
+    // height-capped column unreachably.
+    expect(container.querySelector(".col-policy .policy-draft .cf-panel")).not.toBeNull();
+    const panel = container.querySelector(".cf-panel") as HTMLElement;
+    expect(panel.querySelector(".cf-body")).not.toBeNull();
+    expect(panel.querySelector(".cf-foot")).not.toBeNull();
   });
 
   it("renders the persistent nav with both destinations, Policy Creator active", () => {
