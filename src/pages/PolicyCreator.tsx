@@ -12,6 +12,7 @@ import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
 import { buildEffectiveRegex } from "../lib/regex";
 import { loadTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
+import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
 import {
@@ -143,6 +144,20 @@ export default function PolicyCreator() {
     );
   };
 
+  /* ----- competitor-lookup handoff -----
+     The Find-competitors surface returns reviewed, user-selected domains;
+     load (or replace) them as a recipient-domain condition. Like the trusted
+     handoff, this only ever runs on an explicit user action. */
+  const onAddCompetitors = (domains: string[]) => {
+    if (!domains.length) return;
+    const cond = makeCompetitorCondition(domains);
+    setAdded((prev) =>
+      prev.some((c) => c.id === COMPETITOR_CONDITION_ID)
+        ? prev.map((c) => (c.id === COMPETITOR_CONDITION_ID ? cond : c))
+        : [...prev, cond],
+    );
+  };
+
   const set: DraftSetters = {
     name: (v) => setDraft((d) => ({ ...d, name: v, nameDirty: true })),
     description: (v) => setDraft((d) => ({ ...d, description: v, descDirty: true })),
@@ -218,6 +233,7 @@ export default function PolicyCreator() {
             trustedDomains={trusted}
             onUseTrusted={onUseTrusted}
             onRefreshTrusted={onRefreshTrusted}
+            onAddCompetitors={onAddCompetitors}
           />
           <div id="test-anchor"></div>
           <TestPanel
