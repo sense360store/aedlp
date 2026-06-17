@@ -46,6 +46,24 @@ describe("CompetitorFinder", () => {
     expect(screen.getByText(/extractor stay in your browser and are never sent/i)).toBeTruthy();
   });
 
+  it("asks for a fuller name and does not call the API when the company is 2 chars or fewer", () => {
+    render(<CompetitorFinder onAdd={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+    fireEvent.change(screen.getByLabelText("Company or customer name"), { target: { value: "ba" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    // "ba" is too short to disambiguate — prompt for a fuller name, never call out.
+    expect(screen.getByText(/Enter a fuller name/i)).toBeTruthy();
+    expect(screen.getByText(/British Airways/i)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Typing a fuller name clears the prompt so a real lookup can proceed.
+    fireEvent.change(screen.getByLabelText("Company or customer name"), {
+      target: { value: "British Airways" },
+    });
+    expect(screen.queryByText(/Enter a fuller name/i)).toBeNull();
+  });
+
   it("expands an inline panel (not a modal dialog) and toggles via the trigger", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
     const trigger = screen.getByRole("button", { name: "Find competitors" });
@@ -144,6 +162,16 @@ describe("CompetitorFinder", () => {
     expect(screen.getByText("Verified")).toBeTruthy();
     expect(screen.getByText("Unverified")).toBeTruthy();
     expect(screen.getByText(/Direct rival in widgets/)).toBeTruthy();
+  });
+
+  it("shows the model-suggested + DNS-checked confirmation note with results", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
+    render(<CompetitorFinder onAdd={() => {}} />);
+    openAndSearch();
+    await waitFor(() => expect(screen.getByText("globex-industries.example")).toBeTruthy());
+    expect(
+      screen.getByText(/Domains are model-suggested and DNS-checked\. Confirm before use\./i),
+    ).toBeTruthy();
   });
 
   it("requires explicit selection before Add and never auto-applies", async () => {

@@ -2,7 +2,7 @@
    Find competitors — a clearly-scoped lookup surface.
 
    The user types a company name (and optional industry); the app
-   asks Claude (via /api/competitors, grounded on web search) for that
+   asks Claude (via /api/competitors, from its own knowledge) for that
    company's competitors and their primary corporate email domains,
    verifies the domains, and shows them here for review. The user
    checks the ones they want and clicks Add, which curates them into a
@@ -45,6 +45,9 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
   const [suggestions, setSuggestions] = useState<CompetitorSuggestion[]>([]);
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // True when the typed name is too short to look up (≤ 2 chars), so we prompt
+  // for a fuller name instead of spending a lookup on an ambiguous abbreviation.
+  const [shortName, setShortName] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -79,6 +82,7 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
     setSuggestions([]);
     setNotes("");
     setSelected(new Set());
+    setShortName(false);
   }
 
   function close() {
@@ -89,7 +93,21 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
   }
 
   async function find() {
-    if (!company.trim() || status === "loading") return;
+    if (status === "loading") return;
+    const trimmed = company.trim();
+    if (!trimmed) return;
+    // Two characters or fewer can't be disambiguated (e.g. "BA" → British Airways?
+    // Bank of America?). Ask for a fuller name before spending a lookup on it.
+    if (trimmed.length <= 2) {
+      setShortName(true);
+      setStatus("idle");
+      setError("");
+      setSuggestions([]);
+      setNotes("");
+      setSelected(new Set());
+      return;
+    }
+    setShortName(false);
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -161,8 +179,9 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
           <div className="cf-body">
             {/* Permanent privacy note — must stay on this surface. */}
             <Callout tone="info" icon="info" title="What gets sent">
-              Only the company name and industry you type are sent to the lookup service, which uses Claude
-              with web search. Uploaded files and the extractor stay in your browser and are never sent.
+              Only the company name and industry you type are sent to the lookup service, which asks Claude
+              to suggest competitor domains from its own knowledge. Uploaded files and the extractor stay in
+              your browser and are never sent.
             </Callout>
 
             <div className="cf-form">
@@ -176,7 +195,10 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
                   className="input"
                   placeholder="e.g. Globex Corporation"
                   value={company}
-                  onChange={(e) => setCompany(e.target.value)}
+                  onChange={(e) => {
+                    setCompany(e.target.value);
+                    if (shortName) setShortName(false);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -213,10 +235,17 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
               </button>
             </div>
 
+            {shortName && (
+              <Callout tone="warn" icon="info" title="Enter a fuller name">
+                That’s too short to look up. Type the full company name — for example, “British Airways”
+                rather than “BA”.
+              </Callout>
+            )}
+
             {status === "loading" && (
               <div className="cf-loading">
                 <span className="spinner" />
-                <span>Researching competitors and verifying domains…</span>
+                <span>Finding competitors and verifying domains…</span>
               </div>
             )}
 
@@ -245,6 +274,9 @@ export function CompetitorFinder({ onAdd, triggerClassName = "btn sm" }: Competi
                     {suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"}
                   </span>
                   <span className="small muted">Select the domains to add</span>
+                </div>
+                <div className="cf-disclaimer small muted">
+                  Domains are model-suggested and DNS-checked. Confirm before use.
                 </div>
                 <div className="cf-results">
                   {suggestions.map((s) => (

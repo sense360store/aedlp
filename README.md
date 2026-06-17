@@ -39,14 +39,17 @@ ones you trust, and exports the result as text, JSON, or CSV.
 ### Find competitors (Policy Creator)
 
 A "Find competitors" panel on the Policy Creator looks up a company's competitors and their primary
-corporate email domains. You type a company or customer name (and an optional industry); the app calls
-Claude with web search through a serverless function, verifies the returned domains, and shows them as
-suggestions with a confidence chip and a verified / unverified flag. You review the list, check the
-domains you want, and click Add to curate them into a recipient-domain condition. Nothing is auto
-applied, and unverified or unchecked rows are never added silently.
+corporate email domains. You type a company or customer name (and an optional industry); the app asks
+Claude, through a serverless function, for the competitors from its own knowledge, verifies the
+returned domains by DNS, and shows them as suggestions with a confidence chip and a verified /
+unverified flag. You review the list, check the domains you want, and click Add to curate them into a
+recipient-domain condition. Nothing is auto applied, and unverified or unchecked rows are never added
+silently. (A name of two characters or fewer is too ambiguous to look up — the panel asks for a fuller
+name first.)
 
-Only the company name you type is sent to the lookup service. Uploaded files and the extractor stay in
-your browser and are never sent. This panel is the single exception to "no backend" below.
+Only the company name and industry you type are sent to the lookup service. Uploaded files and the
+extractor stay in your browser and are never sent. This panel is the single exception to "no backend"
+below.
 
 ### Handoff between the pages
 
@@ -67,8 +70,8 @@ function, `api/competitors.ts`. That endpoint:
   browser; uploaded files and the extractor are never sent;
 - is gated by a shared-secret header (`x-aedlp-key`) and rate limited per client IP (10/min, 100/day)
   with a connected Upstash / Vercel KV store;
-- calls Claude (`claude-sonnet-4-6`) with server-side web search, verifies the returned domains by DNS,
-  and returns suggestions for review.
+- calls Claude (`claude-sonnet-4-6`) for the competitors from its own knowledge (no web search, so it
+  returns in a few seconds), verifies the returned domains by DNS, and returns suggestions for review.
 
 Everything else in the app remains static and client side.
 

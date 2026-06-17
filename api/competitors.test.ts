@@ -31,10 +31,12 @@ vi.mock("node:dns", () => ({
 }));
 
 import handler, {
+  buildNotes,
   cleanDomain,
   parseModelSuggestions,
   stripFences,
   verifySuggestions,
+  type CompetitorSuggestion,
   type CompetitorsResponse,
   type RawSuggestion,
 } from "./competitors";
@@ -266,20 +268,59 @@ describe("handler — happy path", () => {
     expect(state.statusCode).toBe(502);
   });
 
-  it("degrades to a clean 200 with a 'narrow your query' note when the search never completes", async () => {
-    // The web-search loop keeps pausing and never returns a final answer; the
-    // pause-guard stops it. Rather than a 504, the handler returns 200 with no
-    // suggestions and a note nudging the user toward a narrower query.
-    anthropicCreate.mockResolvedValue({ stop_reason: "pause_turn", content: [] });
+  it("returns a clean 200 with a hint note when the model returns no usable suggestions", async () => {
+    // No web search and no tools: a single model call. If it answers with nothing
+    // parseable (e.g. a refusal), the handler still returns 200 with empty results
+    // and a note nudging toward a more specific query — never a 5xx.
+    anthropicCreate.mockResolvedValue({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "I'm not able to determine that." }],
+    });
     const { res, state } = makeRes();
     await handler(makeReq({ headers: goodHeaders, body: { company: "Globex" } }), res);
 
     expect(state.statusCode).toBe(200);
-    // Initial call + 4 resumes before the guard trips.
-    expect(anthropicCreate).toHaveBeenCalledTimes(5);
+    // Exactly one call now — there is no web-search pause/resume loop to drive.
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
     const payload = state.body as CompetitorsResponse;
     expect(payload.suggestions).toEqual([]);
-    expect(payload.notes).toMatch(/narrow|too long/i);
+    expect(payload.notes).toMatch(/no competitor suggestions|more specific/i);
+  });
+
+  it("makes a single, tool-free model call on the happy path (no web-search loop)", async () => {
+    const { res, state } = makeRes();
+    await handler(makeReq({ headers: goodHeaders, body: { company: "Initech" } }), res);
+
+    expect(state.statusCode).toBe(200);
+    expect(anthropicCreate).toHaveBeenCalledTimes(1);
+    // The request carries no tools — the lookup runs purely on model knowledge.
+    const request = anthropicCreate.mock.calls[0][0] as { tools?: unknown };
+    expect(request.tools).toBeUndefined();
+  });
+});
+
+describe("buildNotes", () => {
+  const sample: CompetitorSuggestion = {
+    name: "Globex",
+    domain: "globex.example",
+    confidence: "high",
+    verified: true,
+    rationale: "rival",
+  };
+
+  it("summarises a normal result as model-suggested + DNS-checked (no 'web search')", () => {
+    const note = buildNotes([sample], 1, false);
+    expect(note).toMatch(/Found 1 competitor suggestion/);
+    expect(note).toMatch(/model-suggested and DNS-checked/i);
+    expect(note).not.toMatch(/web search/i);
+  });
+
+  it("nudges toward a narrower query when the internal deadline backstop fires", () => {
+    expect(buildNotes([], 0, true)).toMatch(/too long|narrower/i);
+  });
+
+  it("explains an empty, non-timed-out result", () => {
+    expect(buildNotes([], 0, false)).toMatch(/No competitor suggestions/i);
   });
 });
 

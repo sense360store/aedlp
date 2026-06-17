@@ -3,8 +3,8 @@
 
    The Find-competitors surface is the one place this app talks to a
    backend: it POSTs the typed company name to /api/competitors, which
-   asks Claude (grounded on web search) for competitor domains and
-   verifies them. Only the company name leaves the browser — uploaded
+   asks Claude (from its own knowledge) for competitor domains and
+   verifies them by DNS. Only the company name leaves the browser — uploaded
    files and the extractor stay entirely local.
 
    Nothing here is auto-applied. The user reviews the returned
@@ -126,7 +126,7 @@ export function makeCompetitorCondition(domains: string[]): Condition {
     displayName: "Competitor domains (from lookup)",
     aliases: ["competitor", "competitor domains", "rival", "lookup competitors"],
     description:
-      "Recipient address on a competitor's domain, curated from the competitor lookup. Review and tune before deploying — domains are model-generated from web search.",
+      "Recipient address on a competitor's domain, curated from the competitor lookup. Review and tune before deploying — domains are model-suggested and DNS-checked.",
     country: "GLOBAL",
     regionLabel: "Global",
     category: "Recipients & destinations",
@@ -141,7 +141,7 @@ export function makeCompetitorCondition(domains: string[]): Condition {
     falsePositiveRisk: "low",
     notes: [
       "Curated from the competitor lookup — verify each domain before relying on it.",
-      "Domains are suggested by Claude from live web search and may be wrong or out of date.",
+      "Domains are suggested by Claude from its own knowledge and may be wrong or out of date.",
     ],
   };
 }
