@@ -1,16 +1,26 @@
 /* ============================================================
-   AEDLP Policy Creator — page shell + library wiring.
-   Topbar and library filtering mirror the prototype App.jsx.
-   The policy draft and test panel (right column) arrive in Phase 4.
+   AEDLP Policy Creator — full page. Library (left) drives the
+   policy draft and test panel (right). Copy/paste oriented, no API.
+   Name / description / tags / action auto-suggested.
+   State model and wiring ported from handoff project/app/App.jsx.
    ============================================================ */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
 import { useTheme } from "../theme";
 import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
+import { buildEffectiveRegex } from "../lib/regex";
+import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
-import type { Condition, Detector } from "../types";
+import {
+  PolicyDraft,
+  type PolicyDraftState,
+  type DraftSetters,
+  type DraftSuggestions,
+} from "../components/policy/PolicyDraft";
+import { TestPanel } from "../components/policy/TestPanel";
+import type { Condition, Detector, RecommendedAction } from "../types";
 
 function makeCondition(d: Detector): Condition {
   if (d.conditionType === "regular_expression") {
@@ -30,7 +40,20 @@ export default function PolicyCreator() {
     industry: "all",
   });
   const [added, setAdded] = useState<Condition[]>([]);
-  const [, setFocus] = useState<Detector | null>(null);
+  const [operator, setOperator] = useState<string>("OR");
+  const [sample, setSample] = useState("");
+  const [focus, setFocus] = useState<Detector | null>(null);
+  const [draft, setDraft] = useState<PolicyDraftState>({
+    name: "",
+    description: "",
+    tags: [],
+    action: "warn",
+    scan: { body: true, subject: true, attachments: true },
+    nameDirty: false,
+    descDirty: false,
+    tagsDirty: false,
+    actionDirty: false,
+  });
 
   /* ----- library filtering (base = filters minus type, so the tabs can count) ----- */
   const base = useMemo(
@@ -57,15 +80,65 @@ export default function PolicyCreator() {
   }, [base]);
   const addedIds = useMemo(() => new Set(added.map((c) => c.id)), [added]);
 
-  /* ----- selection (the policy draft consumes this in Phase 4) ----- */
+  /* ----- suggestions ----- */
+  const suggestions = useMemo<DraftSuggestions>(
+    () => ({
+      name: suggestName(added),
+      description: suggestDescription(added, draft.actionDirty ? draft.action : suggestAction(added)),
+      tags: suggestTags(added),
+    }),
+    [added, draft.action, draft.actionDirty],
+  );
+
+  /* auto-fill non-dirty fields when the condition set changes */
+  useEffect(() => {
+    setDraft((d) => {
+      const next = { ...d };
+      const sa = suggestAction(added);
+      if (!d.actionDirty) next.action = sa;
+      if (!d.nameDirty) next.name = suggestName(added);
+      if (!d.tagsDirty) next.tags = suggestTags(added);
+      if (!d.descDirty) next.description = suggestDescription(added, next.action);
+      return next;
+    });
+  }, [added]);
+
+  /* ----- mutators ----- */
   const onToggle = (d: Detector) =>
     setAdded((prev) =>
       prev.some((c) => c.id === d.id) ? prev.filter((c) => c.id !== d.id) : [...prev, makeCondition(d)],
+    );
+  const onRemove = (id: string) => setAdded((prev) => prev.filter((c) => c.id !== id));
+  const onClear = () => setAdded([]);
+  const onToggleBoundary = (id: string, on: boolean) =>
+    setAdded((prev) =>
+      prev.map((c) =>
+        c.id === id && c.conditionType === "regular_expression"
+          ? { ...c, boundary: on ? "word" : "as_is", _effectiveRegex: on ? buildEffectiveRegex(c.regex, "word") : c.regex }
+          : c,
+      ),
     );
   const onTest = (d: Detector) => {
     setFocus(d);
     const el = document.getElementById("test-anchor");
     if (el) window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - 80, behavior: "smooth" });
+  };
+
+  const set: DraftSetters = {
+    name: (v) => setDraft((d) => ({ ...d, name: v, nameDirty: true })),
+    description: (v) => setDraft((d) => ({ ...d, description: v, descDirty: true })),
+    tags: (v) => setDraft((d) => ({ ...d, tags: v, tagsDirty: true })),
+    action: (v) =>
+      setDraft((d) => ({
+        ...d,
+        action: v as RecommendedAction,
+        actionDirty: true,
+        description: d.descDirty ? d.description : suggestDescription(added, v as RecommendedAction),
+      })),
+    scan: (k, val) => setDraft((d) => ({ ...d, scan: { ...d.scan, [k]: val } })),
+    resetName: () => setDraft((d) => ({ ...d, nameDirty: false, name: suggestName(added) })),
+    resetDesc: () => setDraft((d) => ({ ...d, descDirty: false, description: suggestDescription(added, d.action) })),
+    resetTags: () => setDraft((d) => ({ ...d, tagsDirty: false, tags: suggestTags(added) })),
   };
 
   return (
@@ -118,7 +191,28 @@ export default function PolicyCreator() {
           />
         </div>
 
-        <div className="col-policy"></div>
+        <div className="col-policy">
+          <PolicyDraft
+            draft={draft}
+            set={set}
+            conditions={added}
+            operator={operator}
+            setOperator={setOperator}
+            onRemove={onRemove}
+            onToggleBoundary={onToggleBoundary}
+            onClear={onClear}
+            suggestions={suggestions}
+          />
+          <div id="test-anchor"></div>
+          <TestPanel
+            conditions={added}
+            operator={operator}
+            sample={sample}
+            setSample={setSample}
+            focus={focus}
+            clearFocus={() => setFocus(null)}
+          />
+        </div>
       </main>
     </div>
   );
