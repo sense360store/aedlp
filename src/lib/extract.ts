@@ -1,11 +1,15 @@
 /* ============================================================
-   Trusted Domain Extractor — file parsing & aggregation.
-   Ported from handoff project/app/extractor-parse.jsx. Handles
-   .xlsx / .xls via SheetJS and a streaming fast-path for very
-   large .csv exports (low memory). Everything runs in the browser;
-   nothing is uploaded.
+   Trusted Domain Extractor — shared parsing primitives &
+   the streaming CSV fast-path. Ported from handoff
+   project/app/extractor-parse.jsx.
+
+   The heavy file work (large .xlsx and .csv) runs inside a Web
+   Worker (see parse.worker.ts) so it has its own memory budget and
+   a failure surfaces as an error instead of killing the tab. The
+   .xlsx path streams the zip entry-by-entry and the sheet row-by-row
+   (see xlsx-stream.ts) — it never materialises the whole workbook.
+   Everything runs in the browser; nothing is uploaded.
    ============================================================ */
-import * as XLSX from "xlsx";
 
 export const TARGET_SHEET = /unauth/i; // unauthorised_contacts
 const COL_TYPE = ["contact_type"]; // external / freemail / ...
@@ -24,23 +28,23 @@ export interface ParsedResult {
   sheetNames?: string[];
 }
 
-interface Columns {
+export interface Columns {
   type: number;
   addr: number;
 }
 
-interface AccResult {
+export interface AccResult {
   map: Map<string, DomainRec>;
   scanned: number;
   typeTotals: Map<string, number>;
 }
 
-interface Accumulator {
+export interface Accumulator {
   add(type: unknown, addr: unknown): void;
   result(): AccResult;
 }
 
-function norm(s: unknown): string {
+export function norm(s: unknown): string {
   return String(s == null ? "" : s).trim().toLowerCase();
 }
 
@@ -56,8 +60,8 @@ export function emailDomain(s: unknown): string {
   return dom;
 }
 
-// find header column indices in a row of cells
-function locateColumns(cells: unknown[]): Columns {
+// find header column indices in a row of cells (indexed by column position)
+export function locateColumns(cells: unknown[]): Columns {
   const lc = cells.map(norm);
   const find = (names: string[]) => {
     for (const n of names) {
@@ -70,7 +74,7 @@ function locateColumns(cells: unknown[]): Columns {
 }
 
 // accumulate rows -> Map(domain -> { types:Map(type->count), total })
-function makeAccumulator(): Accumulator {
+export function makeAccumulator(): Accumulator {
   const map = new Map<string, DomainRec>();
   let scanned = 0;
   const typeTotals = new Map<string, number>();
@@ -121,7 +125,7 @@ function splitCSVLine(line: string): string[] {
   return out;
 }
 
-export async function parseCSV(file: File, onProgress?: (p: number) => void): Promise<ParsedResult> {
+export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Promise<ParsedResult> {
   const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
   const acc = makeAccumulator();
   let buf = "";
@@ -164,48 +168,10 @@ export async function parseCSV(file: File, onProgress?: (p: number) => void): Pr
   return { ...r, sheetName: "(csv)", sheetNames: ["(csv)"] };
 }
 
-/* ---------------- XLSX / XLS path (SheetJS) ---------------- */
+/* ---------------- sheet selection (shared by the streaming reader) ---------------- */
 export function pickSheet(names: string[], preferred?: string): string {
   if (preferred && names.includes(preferred)) return preferred;
   return names.find((n) => TARGET_SHEET.test(n)) || names[0];
-}
-
-export async function readSheetNames(file: File): Promise<{ names: string[]; buf: Uint8Array }> {
-  const buf = new Uint8Array(await file.arrayBuffer());
-  const wb = XLSX.read(buf, { type: "array", bookSheets: true });
-  return { names: wb.SheetNames, buf };
-}
-
-function aggregateRows(rows: unknown[][]): AccResult {
-  // rows: array of arrays. find header row within first 25 rows.
-  let headerIdx = -1;
-  let cols: Columns | null = null;
-  for (let i = 0; i < Math.min(rows.length, 25); i++) {
-    const loc = locateColumns(rows[i] || []);
-    if (loc.type >= 0 && loc.addr >= 0) {
-      headerIdx = i;
-      cols = loc;
-      break;
-    }
-  }
-  if (!cols) throw new Error('Could not find "contact_type" and "contact_ad" columns in this sheet.');
-  const acc = makeAccumulator();
-  for (let i = headerIdx + 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r) continue;
-    acc.add(r[cols.type], r[cols.addr]);
-  }
-  return acc.result();
-}
-
-export async function parseWorkbook(file: File, sheetName: string, preBuf?: Uint8Array): Promise<ParsedResult> {
-  const buf = preBuf || new Uint8Array(await file.arrayBuffer());
-  const wb = XLSX.read(buf, { type: "array", sheets: sheetName, dense: true });
-  const ws = wb.Sheets[sheetName];
-  if (!ws) throw new Error('Sheet "' + sheetName + '" could not be read.');
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: false, defval: "" });
-  const r = aggregateRows(rows);
-  return { ...r, sheetName };
 }
 
 export function isCSV(file: File): boolean {
