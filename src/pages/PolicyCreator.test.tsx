@@ -30,7 +30,7 @@ describe("PolicyCreator page", () => {
     const { container } = renderPage();
     expect(screen.getByText("AEDLP Policy Creator")).toBeTruthy();
     expect(screen.getByText("Detector library & custom-policy assembler")).toBeTruthy();
-    expect(container.querySelectorAll(".lib-row").length).toBe(71);
+    expect(container.querySelectorAll(".lib-row").length).toBe(93);
     expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
   });
 
