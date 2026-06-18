@@ -151,6 +151,59 @@ describe("LibraryRow previews and expansion", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expected));
   });
 
+  it("renders and COPIES recipient_domain detectors as bare domains with no leading \"@\"", async () => {
+    // Data invariant across ALL recipient_domain detectors: every value is a
+    // bare domain ("33mail.com"), never "@33mail.com".
+    const recipients = AEDLP_DATA.detectors.filter((d) => d.conditionType === "recipient_domain");
+    expect(recipients.length).toBeGreaterThan(0);
+    for (const r of recipients) {
+      if (r.conditionType !== "recipient_domain") continue;
+      for (const dom of r.domains) expect(dom.startsWith("@")).toBe(false);
+    }
+
+    const d = det("rcp-disposable");
+    if (d.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
+    // The canonical value is the bare domain, e.g. "33mail.com" (not "@33mail.com").
+    expect(d.domains).toContain("33mail.com");
+    expect(d.domains).not.toContain("@33mail.com");
+
+    const { container } = render(<LibraryRow d={d} added={false} onToggle={() => {}} onTest={() => {}} />);
+    const noAt = (els: Element[]) => els.every((el) => !el.textContent?.startsWith("@"));
+
+    // Library-list surface: collapsed preview chips render bare.
+    const previewChips = Array.from(container.querySelectorAll(".prev-chip.mono"));
+    expect(previewChips.length).toBeGreaterThan(0);
+    expect(noAt(previewChips)).toBe(true);
+    expect(previewChips.some((c) => c.textContent === "33mail.com")).toBe(true);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+
+    // Copy-one (the row's copy button → conditionCopyValue) pastes bare domains.
+    fireEvent.click(within(container.querySelector(".row-actions") as HTMLElement).getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copyOne = writeText.mock.calls.at(-1)![0] as string;
+    expect(copyOne).toBe(d.domains.join("\n"));
+    expect(copyOne).not.toContain("@");
+    expect(copyOne.split("\n")).toContain("33mail.com");
+
+    // Expanded/preview surface: inspector chips render bare.
+    fireEvent.click(container.querySelector(".lib-row-main")!);
+    const insp = container.querySelector(".inspector") as HTMLElement;
+    const inspChips = Array.from(insp.querySelectorAll(".prev-chip.mono"));
+    expect(inspChips.length).toBe(d.domains.length);
+    expect(noAt(inspChips)).toBe(true);
+
+    // Copy-all / "copy all domains" — the AEDLP unauthorised-email paste path — is bare.
+    writeText.mockClear();
+    fireEvent.click(within(insp).getByRole("button", { name: "Copy all domains" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copyAll = writeText.mock.calls.at(-1)![0] as string;
+    expect(copyAll).not.toContain("@");
+    expect(copyAll.split("\n")).toContain("33mail.com");
+  });
+
   it("gives a recipient detector select-all + copy-all controls in its expanded view", async () => {
     const d = det("rcp-disposable");
     if (d.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
