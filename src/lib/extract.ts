@@ -12,8 +12,46 @@
    ============================================================ */
 
 export const TARGET_SHEET = /unauth/i; // unauthorised_contacts
-const COL_TYPE = ["contact_type"]; // external / freemail / ...
-const COL_ADDR = ["contact_ad", "contact_address", "contact_email"];
+
+/* Header aliases. Enforcer exports differ in how they label the recipient and
+   contact-type columns — and some have been seen truncated (e.g. "contact_ad") —
+   so we match a SET of known names rather than one hard-coded pair, and the match
+   is case-, whitespace- and separator-insensitive (see canonHeader): "Contact
+   Address", "contact-address" and "contact_address" all compare equal.
+
+   The address aliases deliberately list only recipient/contact-side names, never
+   the sender/user column, so an export that carries BOTH the internal sender and
+   the external contact (the unauthorised_contacts sheet has user_ad AND contact_ad)
+   always resolves to the contact. When none of these match, parsing falls back to
+   scanning the data for a column that looks like email addresses (see
+   createColumnResolver). */
+export const COL_ADDR_ALIASES = [
+  "contact_ad", // the enforcer's own label for the contact address (sometimes truncated to this)
+  "contact_address",
+  "contact_ads",
+  "contact_email",
+  "contact_emails",
+  "recipient_address",
+  "recipient_ad",
+  "recipient_ads",
+  "recipient_email",
+  "recipient",
+  "email_address",
+  "email",
+  "smtp_address",
+  "address",
+];
+
+/* The contact-type / direction column is OPTIONAL: when an export has no such
+   column the extractor still works, treating every recipient as untyped. */
+export const COL_TYPE_ALIASES = [
+  "contact_type",
+  "contact_direction",
+  "direction",
+  "category",
+  "classification",
+  "type",
+];
 
 export interface DomainRec {
   types: Map<string, number>;
@@ -60,17 +98,34 @@ export function emailDomain(s: unknown): string {
   return dom;
 }
 
-// find header column indices in a row of cells (indexed by column position)
+/* Canonicalise a header cell for alias matching: trim, lower-case, and fold any
+   run of spaces / underscores / hyphens / dots / slashes into a single underscore
+   (then strip leading/trailing underscores). This is what lets "Contact Address",
+   "contact-address" and "contact_address" all match the "contact_address" alias. */
+function canonHeader(s: unknown): string {
+  return String(s == null ? "" : s)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._\-/]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+// index of the first column whose canonical header equals one of `aliases`
+// (alias order is priority order), or -1
+function aliasIndex(headerCanon: string[], aliases: string[]): number {
+  for (const a of aliases) {
+    const i = headerCanon.indexOf(a);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+// Locate the contact columns in a header row by alias. `addr` is -1 when no known
+// address alias is present (the caller then falls back to scanning for an email
+// column); `type` is -1 when there is no contact-type/direction column.
 export function locateColumns(cells: unknown[]): Columns {
-  const lc = cells.map(norm);
-  const find = (names: string[]) => {
-    for (const n of names) {
-      const i = lc.indexOf(n);
-      if (i >= 0) return i;
-    }
-    return -1;
-  };
-  return { type: find(COL_TYPE), addr: find(COL_ADDR) };
+  const canon = cells.map(canonHeader);
+  return { type: aliasIndex(canon, COL_TYPE_ALIASES), addr: aliasIndex(canon, COL_ADDR_ALIASES) };
 }
 
 // accumulate rows -> Map(domain -> { types:Map(type->count), total })
@@ -97,6 +152,120 @@ export function makeAccumulator(): Accumulator {
       return { map, scanned, typeTotals };
     },
   };
+}
+
+/* ---------------- robust column resolution (shared by the CSV and .xlsx readers) ----------------
+   One place decides which column holds the recipient address and which (optional)
+   holds the contact type, so the Trusted Domains page and the wizard upload behave
+   identically. It tries the header aliases first and, only when none match, falls
+   back to scanning the data for an email-bearing column. */
+
+export interface ResolvedColumns {
+  /** index of the contact-type/direction column, or -1 when there is none. */
+  type: number;
+  /** index of the recipient/email column (always >= 0 once resolved). */
+  addr: number;
+  /** rows buffered during detection that are data rows to accumulate now. Empty
+   *  for an alias hit (resolved on the header row itself); non-empty only when the
+   *  email-scan fallback had to buffer rows in order to find the column. */
+  replay: unknown[][];
+}
+
+export interface ColumnResolver {
+  /** Feed one non-blank row of cells (indexed by column position). Returns the
+   *  resolved columns the moment they are known — after which feed() must not be
+   *  called again — or null to keep feeding. */
+  feed(cells: unknown[]): ResolvedColumns | null;
+  /** Force a decision from whatever has been buffered, for when the stream ends
+   *  before feed() resolved. Returns the columns, or null when no email column
+   *  could be found at all (the caller then raises columnsNotFoundError). */
+  finalize(): ResolvedColumns | null;
+  /** The non-empty header labels seen (the first non-blank buffered row), for the
+   *  "columns found" banner when resolution fails. */
+  foundHeaders(): string[];
+}
+
+// The header (or, for the fallback, enough email evidence) must appear within the
+// first N non-blank rows — the same bound the old single-pass header search used.
+const HEADER_SCAN_LIMIT = 25;
+
+// Token hints for the email-scan fallback: when more than one column looks like
+// email, prefer a recipient/contact column over a sender/user one. Matched against
+// the canonical (underscore-joined) header, so tokens are bounded by `_` or ends.
+const ADDR_HINT = /(^|_)(recipient|contact|external|destination|to)(_|$)/;
+const SENDER_HINT = /(^|_)(sender|user|internal|source|owner|from)(_|$)/;
+
+export function createColumnResolver(): ColumnResolver {
+  const buffer: unknown[][] = [];
+  let fed = 0;
+  let exhausted = false;
+
+  // the labels row = the first buffered row that has any non-empty cell
+  const headerRow = (): unknown[] => buffer.find((r) => r.some((c) => String(c ?? "").trim() !== "")) ?? [];
+
+  // No alias matched within the scan window: pick the column whose values most
+  // look like email addresses (nudged toward a recipient/contact header over a
+  // sender/user one), and treat the rows carrying an address there as data.
+  const fallback = (): ResolvedColumns | null => {
+    let width = 0;
+    for (const r of buffer) if (r.length > width) width = r.length;
+    const hCanon = headerRow().map(canonHeader);
+    let bestCol = -1;
+    let bestScore = -Infinity;
+    let bestCount = 0;
+    for (let c = 0; c < width; c++) {
+      let count = 0;
+      for (const r of buffer) if (emailDomain(r[c]) !== "") count++;
+      if (count === 0) continue;
+      const h = hCanon[c] || "";
+      const score = count + (ADDR_HINT.test(h) ? 1e6 : 0) - (SENDER_HINT.test(h) ? 1e6 : 0);
+      if (score > bestScore || (score === bestScore && count > bestCount)) {
+        bestScore = score;
+        bestCount = count;
+        bestCol = c;
+      }
+    }
+    if (bestCol < 0) return null; // nothing in the buffer looked like an email address
+    const type = aliasIndex(hCanon, COL_TYPE_ALIASES);
+    const replay = buffer.filter((r) => emailDomain(r[bestCol]) !== "");
+    return { type, addr: bestCol, replay };
+  };
+
+  return {
+    feed(cells) {
+      if (exhausted) return null;
+      const loc = locateColumns(cells);
+      if (loc.addr >= 0) return { type: loc.type, addr: loc.addr, replay: [] }; // alias hit on this header row
+      buffer.push(cells);
+      if (++fed >= HEADER_SCAN_LIMIT) {
+        exhausted = true;
+        return fallback();
+      }
+      return null;
+    },
+    finalize() {
+      if (exhausted) return null;
+      exhausted = true;
+      return fallback();
+    },
+    foundHeaders() {
+      return headerRow()
+        .map((c) => String(c ?? "").trim())
+        .filter((s) => s !== "");
+    },
+  };
+}
+
+// Friendly, specific error for the genuinely-unresolvable case: keep the calm
+// banner but list the headers the sheet actually had, so the user can see what it
+// contains and which column is missing.
+export function columnsNotFoundError(found: string[], where: "sheet" | "CSV" = "sheet"): Error {
+  const cols = found.length ? `Columns found: ${found.join(", ")}.` : "No column headers were found.";
+  const loc = where === "CSV" ? "the CSV header" : "this sheet";
+  return new Error(
+    `Could not find a recipient email column in ${loc}. ${cols} ` +
+      `Expected a column such as contact_address, recipient_address or email — or any column of email addresses.`,
+  );
 }
 
 /* ---------------- CSV streaming path ---------------- */
@@ -128,20 +297,26 @@ function splitCSVLine(line: string): string[] {
 export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Promise<ParsedResult> {
   const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
   const acc = makeAccumulator();
+  const resolver = createColumnResolver();
   let buf = "";
   let cols: Columns | null = null;
   let read = 0;
   const total = file.size || 0;
+  const addRow = (cells: unknown[]) => acc.add(cols!.type >= 0 ? cells[cols!.type] : "", cells[cols!.addr]);
+  const apply = (r: ResolvedColumns) => {
+    cols = { type: r.type, addr: r.addr };
+    for (const row of r.replay) addRow(row); // data rows the resolver buffered while detecting
+  };
   const handle = (line: string) => {
     if (line === "") return;
     const cells = splitCSVLine(line);
     if (!cols) {
-      const loc = locateColumns(cells);
-      if (loc.type >= 0 && loc.addr >= 0) cols = loc;
-      // not the header yet (or stray line) — keep scanning a few lines
+      const r = resolver.feed(cells);
+      if (r) apply(r);
+      // else: not the header yet (or stray line) — keep scanning
       return;
     }
-    acc.add(cells[cols.type], cells[cols.addr]);
+    addRow(cells);
   };
   for (;;) {
     const { done, value } = await reader.read();
@@ -162,7 +337,11 @@ export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Pr
       break;
     }
   }
-  if (!cols) throw new Error('Could not find "contact_type" and "contact_ad" columns in the CSV header.');
+  if (!cols) {
+    const r = resolver.finalize();
+    if (r) apply(r);
+    else throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
+  }
   onProgress?.(1);
   const r = acc.result();
   return { ...r, sheetName: "(csv)", sheetNames: ["(csv)"] };

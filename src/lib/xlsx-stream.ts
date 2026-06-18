@@ -21,9 +21,11 @@
    ============================================================ */
 import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import {
-  locateColumns,
+  columnsNotFoundError,
+  createColumnResolver,
   makeAccumulator,
   type ParsedResult,
+  type ResolvedColumns,
 } from "./extract";
 
 const WORKBOOK_PATH = "xl/workbook.xml";
@@ -320,43 +322,50 @@ export async function parseWorkbookStream(
 
   // ---- pass 2: stream the target sheet row-by-row ----
   const acc = makeAccumulator();
+  const resolver = createColumnResolver();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
-  let headerFound = false;
-  let headerExhausted = false;
+  let resolved = false;
   let colType = -1;
   let colAddr = -1;
-  let headerCandidates = 0;
   let maxBufferChars = 0;
   let sheetBytes = 0;
   let sheetDone = false;
   const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
 
+  // Expand a row's cells into a dense array indexed by column position. Used only
+  // while locating the header (the data fast-path below reads just two columns).
+  const denseCells = (rowXml: string): string[] => {
+    const cells = parseCells(rowXml, sharedStrings);
+    let maxCol = -1;
+    for (const k of cells.keys()) if (k > maxCol) maxCol = k;
+    const dense: string[] = new Array(maxCol + 1).fill("");
+    for (const [k, v] of cells) dense[k] = v;
+    return dense;
+  };
+
+  const apply = (r: ResolvedColumns) => {
+    resolved = true;
+    colType = r.type;
+    colAddr = r.addr;
+    // Data rows the resolver buffered while detecting (only the email-scan
+    // fallback buffers; an alias hit resolves on the header row with none).
+    for (const row of r.replay) acc.add(colType >= 0 ? row[colType] : "", row[colAddr]);
+  };
+
   const handleRow = (rowXml: string, body: string | undefined) => {
     // A row is "blank" (and never counted) unless it holds a value cell, which
     // mirrors SheetJS's blankrows:false behaviour the old path relied on.
     const nonBlank = body !== undefined && (body.indexOf("<v>") >= 0 || body.indexOf("<is>") >= 0);
-    if (!headerFound) {
-      if (headerExhausted || !nonBlank) return;
-      const cells = parseCells(rowXml, sharedStrings);
-      let maxCol = -1;
-      for (const k of cells.keys()) if (k > maxCol) maxCol = k;
-      const dense: string[] = new Array(maxCol + 1).fill("");
-      for (const [k, v] of cells) dense[k] = v;
-      const loc = locateColumns(dense);
-      headerCandidates++;
-      if (loc.type >= 0 && loc.addr >= 0) {
-        headerFound = true;
-        colType = loc.type;
-        colAddr = loc.addr;
-      } else if (headerCandidates >= 25) {
-        headerExhausted = true; // header must be within the first 25 non-blank rows
-      }
+    if (!resolved) {
+      if (!nonBlank) return;
+      const r = resolver.feed(denseCells(rowXml));
+      if (r) apply(r);
       return;
     }
     if (!nonBlank) return; // blank data row -> not scanned
-    const cells = parseCells(rowXml, sharedStrings, colType, colAddr);
-    acc.add(cells.get(colType) ?? "", cells.get(colAddr) ?? "");
+    const cells = parseCells(rowXml, sharedStrings, colAddr, colType);
+    acc.add(colType >= 0 ? cells.get(colType) ?? "" : "", cells.get(colAddr) ?? "");
   };
 
   const feed = (text: string) => {
@@ -392,8 +401,10 @@ export async function parseWorkbookStream(
     },
   );
 
-  if (!headerFound) {
-    throw new Error('Could not find "contact_type" and "contact_ad" columns in this sheet.');
+  if (!resolved) {
+    const r = resolver.finalize();
+    if (r) apply(r);
+    else throw columnsNotFoundError(resolver.foundHeaders(), "sheet");
   }
   onProgress?.(1);
   const r = acc.result();
