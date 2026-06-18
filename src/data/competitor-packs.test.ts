@@ -38,12 +38,14 @@ const FINANCIAL_DOMAINS = [
 ];
 
 describe("Competitor domain packs (batch 1)", () => {
-  it("adds 2 recipient_domain detectors with the expected ids", () => {
-    expect(competitorPacks).toHaveLength(2);
+  it("adds the competitor packs with the expected ids (batch 1 + sector batch)", () => {
+    expect(competitorPacks).toHaveLength(4);
     expect(competitorPacks.every((d) => d.conditionType === "recipient_domain")).toBe(true);
     expect(competitorPacks.map((d) => d.id)).toEqual([
       "rcp-competitors-aerospace",
       "rcp-competitors-financial",
+      "rcp-competitors-construction",
+      "rcp-competitors-airlines",
     ]);
     // Match mode mirrors the other recipient detectors.
     for (const d of competitorPacks) {
@@ -81,8 +83,9 @@ describe("Competitor domain packs (batch 1)", () => {
     if (placeholder?.conditionType === "recipient_domain") {
       expect(placeholder.domains.every((x) => x.endsWith(".example"))).toBe(true);
     }
-    // Five recipient_domain detectors total: freemail, disposable, the generic
-    // placeholder, and the two new packs.
+    // Seven recipient_domain detectors total: freemail, disposable, the generic
+    // placeholder, and the four competitor packs (aerospace, financial,
+    // construction, airlines).
     const rcpIds = AEDLP_DATA.detectors
       .filter((d) => d.conditionType === "recipient_domain")
       .map((d) => d.id);
@@ -93,9 +96,11 @@ describe("Competitor domain packs (batch 1)", () => {
         "rcp-competitors",
         "rcp-competitors-aerospace",
         "rcp-competitors-financial",
+        "rcp-competitors-construction",
+        "rcp-competitors-airlines",
       ]),
     );
-    expect(rcpIds).toHaveLength(5);
+    expect(rcpIds).toHaveLength(7);
   });
 
   it("tags each pack with its industry and exposes it in the taxonomy", () => {

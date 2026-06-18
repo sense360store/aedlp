@@ -20,6 +20,8 @@ import type {
 } from "../types";
 import { AEDLP_RECIPIENT_DOMAINS } from "./recipients";
 import { ukPiiRegexDetectors, ukPiiKeywordPatternDetectors } from "./uk-pii-detectors";
+import { conRegex, conKeywords, conKeywordPatterns, conPacks } from "./sector-construction";
+import { travRegex, travKeywords, travKeywordPatterns, travPacks } from "./sector-travel";
 
 type RxInput = Omit<RegexDetector, "conditionType" | "contextKeywords"> &
   Partial<Pick<RegexDetector, "contextKeywords">>;
@@ -931,6 +933,12 @@ export const competitorPacks: RecipientDomainDetector[] = [
       "Industry starting list. Remove your own organisation and add the specific rivals that matter to the customer before deploying.",
       "Banks use many brand, retail and country domains (for example .co.uk and regional variants) not all listed here; confirm coverage for the customer."
     ] }),
+  /* Sector batch (batch 2): Construction & real estate, Travel & transport.
+     Each carries an explicit `industries` array so it stays scoped to its own
+     vertical and does not inherit the "Recipients & destinations" Cross-industry
+     default (the leak that surfaced every pack under every filter). */
+  ...conPacks,
+  ...travPacks,
 ];
 const recipientDetectors = [
   rcp({ id: "rcp-freemail", displayName: "Personal Webmail / Freemail Domains",
@@ -1136,11 +1144,17 @@ const detectors: Detector[] = [
   ...regexDetectors,
   ...phase1Detectors,
   ...phase2Regex,
+  ...conRegex,
+  ...travRegex,
   ...keywordDetectors,
   ...transportDetectors,
   ...phase2Keywords,
+  ...conKeywords,
+  ...travKeywords,
   ...keywordPatterns,
   ...phase2KeywordPatterns,
+  ...conKeywordPatterns,
+  ...travKeywordPatterns,
   ...recipientDetectors,
   ...fileExtensionDetectors,
 ];
@@ -1164,8 +1178,9 @@ const categories = [
 const industries = [
   "Cross-industry", "Financial services", "Insurance", "Healthcare & life sciences",
   "Technology & SaaS", "Legal & professional services", "Manufacturing & engineering",
-  "Aerospace & defense", "Transportation & logistics", "Retail & e-commerce",
-  "Energy & utilities", "Public sector", "Education"
+  "Aerospace & defense", "Construction & real estate", "Transportation & logistics",
+  "Travel & transport", "Retail & e-commerce", "Energy & utilities", "Public sector",
+  "Education"
 ];
 const catIndustry: Record<string, string[]> = {
   "Government ID": ["Cross-industry", "Public sector"],
@@ -1194,7 +1209,9 @@ const industryAlias: Record<string, string[]> = {
   "Public sector": ["Public sector"],
   "Data protection": ["Cross-industry"],
   "Cross-industry": ["Cross-industry"],
-  "Transportation & logistics": ["Transportation & logistics"]
+  "Transportation & logistics": ["Transportation & logistics"],
+  "Construction & real estate": ["Construction & real estate"],
+  "Travel & transport": ["Travel & transport"]
 };
 const industryOverride: Record<string, string[]> = {
   "vin-number": ["Transportation & logistics", "Insurance", "Cross-industry"],
