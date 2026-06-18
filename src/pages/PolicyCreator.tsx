@@ -11,7 +11,7 @@ import { useTheme } from "../theme";
 import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
 import { buildEffectiveRegex } from "../lib/regex";
-import { loadTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
+import { loadTrustedDomains, saveTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
 import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
 import { FEATURE_COMPETITOR_FINDER, FEATURE_TEST_PANEL } from "../lib/features";
@@ -207,13 +207,22 @@ export default function PolicyCreator() {
   /* ----- wizard front door -----
      Finish: remember the account, switch on its industry pre-filter (clearable
      by the user — a pre-filter, not a lock), and pre-fill the policy metadata.
-     No conditions are ever added. Skip / Close / Escape: leave the library and
-     draft untouched. Either action can also set the global "don't show again"
-     preference. The re-open control clears that preference and shows the wizard
-     again, so "skippable" never means "gone". */
-  const onWizardFinish = (account: WizardAccount, dontShowAgain: boolean) => {
+     No conditions are ever added. If the optional upload step produced a
+     trusted-domain list, persist it through the SAME extractor storage key and
+     refresh, so it surfaces through the existing handoff exactly as if it had
+     been curated on the Trusted Domains page — never auto-added to a condition.
+     With no list (skipped or unusable file) the landing is Phase A, unchanged.
+     Skip / Close / Escape: leave the library and draft untouched. Either action
+     can also set the global "don't show again" preference. The re-open control
+     clears that preference and shows the wizard again, so "skippable" never
+     means "gone". */
+  const onWizardFinish = (account: WizardAccount, dontShowAgain: boolean, trustedDomains: string[] | null) => {
     recordCompletedAccount(account);
     setGlobalDismiss(dontShowAgain);
+    if (trustedDomains && trustedDomains.length) {
+      saveTrustedDomains(trustedDomains);
+      setTrusted(loadTrustedDomains());
+    }
     setFilters((f) => ({ ...f, industry: account.industry }));
     setDraft((d) => ({
       ...d,

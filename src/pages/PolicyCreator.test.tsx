@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+
+// The wizard's optional step two reuses the extractor's worker client; mock it
+// so uploads resolve deterministically in jsdom (no real Worker). Only the
+// worker boundary is mocked — the trusted-domain extraction and handoff are real.
+vi.mock("../lib/parseClient", () => ({ parseFile: vi.fn() }));
+import { parseFile } from "../lib/parseClient";
 import PolicyCreator from "./PolicyCreator";
 import {
   setGlobalDismiss,
@@ -9,11 +15,15 @@ import {
   loadWizardState,
   qualifyingIndustries,
 } from "../lib/wizard";
+import type { ParsedResult } from "../lib/extract";
 import { AEDLP_DATA } from "../data/library";
+
+const mockParseFile = vi.mocked(parseFile);
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  mockParseFile.mockReset();
 });
 
 function renderPage() {
@@ -183,10 +193,13 @@ describe("PolicyCreator wizard front door", () => {
   const descField = (c: HTMLElement) =>
     c.querySelector(".policy-draft textarea.pf-input") as HTMLTextAreaElement;
 
+  // Complete step one then skip the optional upload — the pure Phase A path
+  // (no file), which must land identically to the original single-step wizard.
   function complete(container: HTMLElement, customer: string, industry: string) {
     fireEvent.change(screen.getByPlaceholderText(/Globex Corporation/), { target: { value: customer } });
     fireEvent.change(screen.getByLabelText("Industry"), { target: { value: industry } });
-    fireEvent.click(screen.getByRole("button", { name: /Start in Policy Creator/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip this step" }));
     return container;
   }
 
@@ -283,5 +296,130 @@ describe("PolicyCreator wizard front door", () => {
     localStorage.setItem("aedlp_wizard_global_dismiss", "garbage");
     renderPage();
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});
+
+/* Phase B: the optional second step that pre-loads a trusted-domain list from an
+   enforcer export and carries it into the landing through the existing handoff. */
+describe("PolicyCreator wizard step two (optional enforcer-export upload)", () => {
+  const TRUSTED_KEY = "aedlp_trusted_domains";
+  const industryFilter = (c: HTMLElement) =>
+    c.querySelector('select[aria-label="Filter by industry"]') as HTMLSelectElement;
+  const nameField = (c: HTMLElement) => c.querySelector(".policy-draft input.pf-input") as HTMLInputElement;
+
+  // Two external domains (trusted third parties) + one freemail (excluded).
+  const PARSED: ParsedResult = {
+    map: new Map([
+      ["partner.com", { types: new Map([["external", 2]]), total: 2 }],
+      ["vendor.io", { types: new Map([["external", 1]]), total: 1 }],
+      ["gmail.com", { types: new Map([["freemail", 3]]), total: 3 }],
+    ]),
+    scanned: 6,
+    typeTotals: new Map([
+      ["external", 3],
+      ["freemail", 3],
+    ]),
+    sheetName: "unauthorised_contacts",
+  };
+  const EXTRACTED = ["partner.com", "vendor.io"];
+
+  function stepOne(customer = "Globex", industry = "Financial services") {
+    fireEvent.change(screen.getByPlaceholderText(/Globex Corporation/), { target: { value: customer } });
+    fireEvent.change(screen.getByLabelText("Industry"), { target: { value: industry } });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  }
+  function uploadFile(container: HTMLElement, file: File) {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  it("skipping step two matches Phase A exactly — pre-fill applied, no trusted list written", () => {
+    const { container } = renderPage();
+    stepOne("Globex", "Financial services");
+    fireEvent.click(screen.getByRole("button", { name: "Skip this step" }));
+
+    // Phase A landing: industry pre-filter + pre-filled name, no conditions.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(industryFilter(container).value).toBe("Financial services");
+    expect(nameField(container).value).toBe("Globex, Financial services DLP");
+    expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
+    // No trusted list touched, and the handoff shows the quiet "build one" prompt.
+    expect(localStorage.getItem(TRUSTED_KEY)).toBeNull();
+    expect(mockParseFile).not.toHaveBeenCalled();
+  });
+
+  it("a parsed export pre-loads the trusted list via the extractor key and surfaces it through the handoff", async () => {
+    mockParseFile.mockResolvedValue({ kind: "result", result: PARSED });
+    const { container } = renderPage();
+    stepOne("Globex", "Financial services");
+    uploadFile(container, new File(["data"], "enforcer.xlsx"));
+
+    await screen.findByText(/2 trusted domains found/i);
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+
+    // Landed (Phase A pre-fill still applied)…
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(industryFilter(container).value).toBe("Financial services");
+    expect(nameField(container).value).toBe("Globex, Financial services DLP");
+    // …and the extracted list was persisted under the SAME extractor storage key.
+    expect(JSON.parse(localStorage.getItem(TRUSTED_KEY) || "null")).toEqual(EXTRACTED);
+
+    // It is available to a recipient-domain condition through the existing handoff
+    // (never auto-added): add one, the bar shows the list, "Use" loads it.
+    fireEvent.change(industryFilter(container), { target: { value: "all" } });
+    const search = container.querySelector("input.search") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "Personal Webmail" } });
+    const row = container.querySelector<HTMLElement>(".lib-row")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Add" }));
+
+    const bar = container.querySelector(".trusted-bar");
+    expect(bar?.textContent).toContain("2");
+    expect(bar?.textContent).toMatch(/ready from your last extract/i);
+    expect(screen.queryByText("Trusted / allowed recipient domains (from extract)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+    expect(screen.getByText("Trusted / allowed recipient domains (from extract)")).toBeTruthy();
+    expect(container.textContent).toContain("partner.com");
+    expect(container.textContent).toContain("vendor.io");
+  });
+
+  it("accepts a CSV through the same worker path and stores the extracted domains", async () => {
+    mockParseFile.mockResolvedValue({ kind: "result", result: PARSED });
+    const { container } = renderPage();
+    stepOne();
+    uploadFile(container, new File(["data"], "enforcer.csv"));
+    await screen.findByText(/2 trusted domains found/i);
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+    expect(JSON.parse(localStorage.getItem(TRUSTED_KEY) || "null")).toEqual(EXTRACTED);
+  });
+
+  // A malformed file (parser rejecting) landing cleanly is covered at both the
+  // component and page level in wizard-upload-failure.test.tsx (plain rejecting
+  // mock — see the note there). The empty-result path below is the sibling case
+  // and asserts the same "clean landing, storage untouched" property here.
+
+  it("does not overwrite an existing trusted list when the upload yields nothing", async () => {
+    localStorage.setItem(TRUSTED_KEY, JSON.stringify(["keep-me.com"]));
+    mockParseFile.mockResolvedValue({
+      kind: "result",
+      result: { map: new Map(), scanned: 0, typeTotals: new Map(), sheetName: "(empty)" },
+    });
+    const { container } = renderPage();
+    stepOne();
+    uploadFile(container, new File(["data"], "enforcer.csv"));
+    await screen.findByText(/No usable trusted domains/i);
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+    // The earlier list is untouched (we only write when there's a usable list).
+    expect(JSON.parse(localStorage.getItem(TRUSTED_KEY) || "null")).toEqual(["keep-me.com"]);
+  });
+
+  it("re-running the wizard for an account may re-upload (no file contents persisted)", () => {
+    recordCompletedAccount({ customer: "Initech", industry: "Technology & SaaS" });
+    renderPage();
+    // Returns straight to the library (Phase A state remembered), no dialog…
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // …and only the Phase A keys persist — no file/upload content is stored.
+    const keys = Object.keys(localStorage);
+    expect(keys.some((k) => k.startsWith("aedlp_wizard_"))).toBe(true);
+    expect(keys).not.toContain(TRUSTED_KEY); // nothing uploaded this run
   });
 });

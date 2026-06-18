@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { emailDomain, isCSV, parseCSV, pickSheet, TARGET_SHEET } from "./extract";
+import {
+  emailDomain,
+  isCSV,
+  parseCSV,
+  pickSheet,
+  TARGET_SHEET,
+  trustedDomainsFromParsed,
+  type ParsedResult,
+} from "./extract";
 
 describe("emailDomain", () => {
   it("extracts and normalises the domain", () => {
@@ -65,5 +73,51 @@ describe("parseCSV (streaming)", () => {
     const csv = "a,b,c\n1,2,3\n";
     const file = new File([csv], "bad.csv", { type: "text/csv" });
     await expect(parseCSV(file)).rejects.toThrow(/contact_type/);
+  });
+});
+
+describe("trustedDomainsFromParsed (wizard default selection)", () => {
+  it("takes the external contacts' domains from a real CSV parse, de-duped and sorted", async () => {
+    const csv = [
+      "contact_ad,contact_type",
+      "partner@vendor.com,external",
+      "rep@vendor.com,external", // same domain again -> de-duped
+      "ally@trusted-partner.io,external",
+      "jdoe@gmail.com,freemail", // freemail is not a trusted third party
+    ].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    // External default, sorted, unique — gmail.com (freemail) excluded.
+    expect(trustedDomainsFromParsed(res)).toEqual(["trusted-partner.io", "vendor.com"]);
+  });
+
+  const parsed = (entries: [string, [string, number][]][], typeTotals: [string, number][]): ParsedResult => ({
+    map: new Map(entries.map(([dom, types]) => [dom, { types: new Map(types), total: types.reduce((s, [, n]) => s + n, 0) }])),
+    scanned: 0,
+    typeTotals: new Map(typeTotals),
+    sheetName: "(test)",
+  });
+
+  it("prefers external, then falls back to the first type present, then to all", () => {
+    // No external -> first type present (freemail) wins.
+    expect(
+      trustedDomainsFromParsed(
+        parsed([["gmail.com", [["freemail", 2]]], ["acme.com", [["other", 1]]]], [["freemail", 2], ["other", 1]]),
+      ),
+    ).toEqual(["gmail.com"]);
+  });
+
+  it("returns an empty list when the sheet yielded no usable domains", () => {
+    expect(trustedDomainsFromParsed(parsed([], []))).toEqual([]);
+  });
+
+  it("only keeps domains that actually have an external contact", () => {
+    const res = parsed(
+      [
+        ["partner.com", [["external", 3]]],
+        ["gmail.com", [["freemail", 5]]], // present, but no external -> excluded
+      ],
+      [["external", 3], ["freemail", 5]],
+    );
+    expect(trustedDomainsFromParsed(res)).toEqual(["partner.com"]);
   });
 });
