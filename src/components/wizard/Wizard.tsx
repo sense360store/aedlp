@@ -21,7 +21,15 @@
    "Skip this step" (step two) finishes without a trusted list. Built
    entirely from existing styles.css tokens (light/dark, narrow widths).
    ============================================================ */
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from "react";
 import { Icon } from "../ui/Icon";
 import { parseFile } from "../../lib/parseClient";
 import { isCSV, trustedDomainsFromParsed } from "../../lib/extract";
@@ -48,6 +56,21 @@ type Step = 1 | 2;
    list, a quiet note) — never an error wall. */
 type UploadStage = "idle" | "parsing" | "sheet" | "ready" | "empty" | "error";
 
+/* Focusable descendants of a node, in DOM order, excluding disabled and
+   visually hidden elements (e.g. the dropzone's display:none <input type=file>).
+   Drives the focus trap and the per-step focus move. The computed-style check
+   keeps the hidden file input out in both real browsers and jsdom. */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableWithin(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((el) => {
+    if (el.hasAttribute("disabled") || el.getAttribute("aria-hidden") === "true") return false;
+    const s = getComputedStyle(el);
+    return s.display !== "none" && s.visibility !== "hidden";
+  });
+}
+
 export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const [step, setStep] = useState<Step>(1);
   const [customer, setCustomer] = useState("");
@@ -63,15 +86,32 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const [domains, setDomains] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  // The dialog box (focus-trap scope), its body (where step-two focus lands),
+  // the step-one text field, the close button and the hidden file input.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const customerRef = useRef<HTMLInputElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Guards against a slow parse resolving after the user moved on / reopened.
   const parseToken = useRef(0);
   const titleId = useId();
   const descId = useId();
 
-  // Fresh start every time the wizard opens; focus the first field.
+  // Remember whatever had focus when the wizard opened (the trigger) and return
+  // focus to it on close — the standard dialog contract. Declared before the
+  // focus-moving effects so it reads the trigger before we move focus inward.
   useEffect(() => {
     if (!open) return;
+    const trigger = document.activeElement as HTMLElement | null;
+    return () => {
+      if (trigger && document.contains(trigger)) trigger.focus();
+    };
+  }, [open]);
+
+  // Fresh start on every open AND close transition. Resetting on close too means
+  // a reopen never flashes the previous step before settling back on step one.
+  useEffect(() => {
     setStep(1);
     setCustomer("");
     setIndustry("");
@@ -84,8 +124,21 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setDomains([]);
     setErrorMsg("");
     parseToken.current++;
-    inputRef.current?.focus();
   }, [open]);
+
+  // Move focus into the dialog on open and whenever the step changes, so a
+  // keyboard user always lands inside the current step (and the trap has an
+  // anchor). Step one focuses its first field; step two focuses the first
+  // control in the body (the dropzone / first action), never the close button.
+  useEffect(() => {
+    if (!open) return;
+    if (step === 1) {
+      customerRef.current?.focus();
+      return;
+    }
+    const first = bodyRef.current && focusableWithin(bodyRef.current)[0];
+    (first ?? closeRef.current ?? dialogRef.current)?.focus();
+  }, [open, step]);
 
   // Escape cancels the whole wizard on either step (same as Skip / Close),
   // honouring the checkbox — the modal's universal "get me out" gesture.
@@ -147,6 +200,31 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setErrorMsg("");
   };
 
+  // Trap Tab within the dialog so focus can't leak to the page behind it: wrap
+  // from the last focusable to the first (and back), and reclaim focus if it has
+  // escaped the dialog entirely (e.g. the focused control unmounted mid-parse).
+  const onTrapKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== "Tab" || !dialogRef.current) return;
+    const f = focusableWithin(dialogRef.current);
+    if (f.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = f[0];
+    const last = f[f.length - 1];
+    const active = document.activeElement;
+    const outside = !dialogRef.current.contains(active);
+    if (e.shiftKey) {
+      if (active === first || outside) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || outside) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
       className="wiz-overlay"
@@ -156,7 +234,16 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
         if (e.target === e.currentTarget) skipWizard();
       }}
     >
-      <div className="wiz" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId}>
+      <div
+        ref={dialogRef}
+        className="wiz"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+        tabIndex={-1}
+        onKeyDown={onTrapKeyDown}
+      >
         <div className="wiz-head">
           <div className="wiz-mark">
             <Icon name={step === 1 ? "sparkle" : "upload"} size={16} />
@@ -186,6 +273,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
             )}
           </div>
           <button
+            ref={closeRef}
             className="iconbtn wiz-close"
             onClick={skipWizard}
             aria-label="Close"
@@ -200,7 +288,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
             <label className="wiz-field">
               <span className="wiz-label">Customer name</span>
               <input
-                ref={inputRef}
+                ref={customerRef}
                 className="input"
                 value={customer}
                 onChange={(e) => setCustomer(e.target.value)}
@@ -236,9 +324,9 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
             </label>
           </div>
         ) : (
-          <div className="wiz-body">
+          <div className="wiz-body" ref={bodyRef}>
             {stage === "idle" && (
-              <UploadDropzone inputRef={inputRef} onFile={(f) => void runParse(f).catch(() => {})} />
+              <UploadDropzone inputRef={fileInputRef} onFile={(f) => void runParse(f).catch(() => {})} />
             )}
 
             {stage === "parsing" && (
@@ -376,10 +464,21 @@ function UploadDropzone({
   onFile: (f: File) => void;
 }) {
   const [drag, setDrag] = useState(false);
+  const open = () => inputRef.current?.click();
   return (
     <div
       className={"dropzone wiz-dropzone" + (drag ? " drag" : "")}
-      onClick={() => inputRef.current?.click()}
+      role="button"
+      tabIndex={0}
+      aria-label="Upload an enforcer export — .xlsx or .csv, parsed locally in your browser"
+      onClick={open}
+      onKeyDown={(e) => {
+        // Enter / Space activate the dropzone like a button (keyboard parity).
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         setDrag(true);
