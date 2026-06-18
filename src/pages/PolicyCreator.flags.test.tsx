@@ -4,11 +4,12 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { setGlobalDismiss } from "../lib/wizard";
 
-// Flip both hidden surfaces back on to prove the gating is wired to the flags
-// (and that re-enabling is the single edit the flags promise). The components
-// and their own tests are unchanged — this only exercises the entry points.
+// Flip the one remaining hidden surface (the test panel) back on to prove its
+// gating is wired to the flag — re-enabling stays the single edit the flag
+// promises. The component and its own tests are unchanged; this only exercises
+// the entry points. (The competitor finder is no longer gated — it is a
+// first-class feature; its visibility is covered in PolicyCreator.test.tsx.)
 vi.mock("../lib/features", () => ({
-  FEATURE_COMPETITOR_FINDER: true,
   FEATURE_TEST_PANEL: true,
 }));
 
@@ -27,8 +28,8 @@ function renderPage() {
   );
 }
 
-describe("PolicyCreator with the hidden surfaces re-enabled", () => {
-  // The wizard front door is orthogonal to these flags — suppress it so the
+describe("PolicyCreator with FEATURE_TEST_PANEL re-enabled", () => {
+  // The wizard front door is orthogonal to this flag — suppress it so the
   // library/test surfaces are the landing view.
   beforeEach(() => setGlobalDismiss(true));
 
@@ -44,12 +45,5 @@ describe("PolicyCreator with the hidden surfaces re-enabled", () => {
     fireEvent.change(search, { target: { value: "AWS Access Key ID" } });
     fireEvent.click(container.querySelector(".lib-row-main")!);
     expect(screen.getByRole("button", { name: "Test this" })).toBeTruthy();
-  });
-
-  it("surfaces the competitor finder on the Recipients view when FEATURE_COMPETITOR_FINDER is on", () => {
-    const { container } = renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /Recipients/ }));
-    expect(container.querySelector(".col-lib .lib-recipients-bar")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Find competitors with AI" })).toBeTruthy();
   });
 });

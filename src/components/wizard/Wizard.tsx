@@ -3,18 +3,31 @@
    Creator, not a new route.
 
    Step one (Phase A): customer name + industry.
-   Step two (Phase B, OPTIONAL): upload an enforcer export. It reuses
-   the extractor's streaming Web Worker parser (parseFile) and progress
-   indicator — no new parser, no backend, nothing leaves the browser —
-   and pre-loads the trusted-domain list from the file. The step is
-   genuinely skippable; finishing with no file behaves exactly like
-   Phase A (industry pre-filter + pre-filled metadata, no trusted list).
+   Step two (Phase B, OPTIONAL): build domain lists. It holds two
+   clearly-separated, optional sections:
+     1. Trusted / allowed domains (ALLOW-LIST) — upload an enforcer
+        export. Reuses the extractor's streaming Web Worker parser
+        (parseFile) and progress indicator — no new parser, nothing
+        leaves the browser — and pre-loads the trusted-domain list.
+     2. Competitor domains (BLOCK-LIST) — the GenAI competitor lookup.
+        An explicit, on-demand button runs the lookup with the company
+        name + industry from step one (a PAID call, so it fires only on
+        click, never on Next), shows the suggest → review → curate flow,
+        and lets the SE pick which domains to keep.
 
-   Finishing hands the chosen account up to the page, plus the extracted
-   trusted-domain list (or null). The page persists those through the
-   SAME extractor storage key, so the list surfaces through the existing
-   handoff exactly as if it had been curated on the Trusted Domains page.
-   It is never auto-added to a condition.
+   The step is genuinely skippable; finishing with neither list behaves
+   exactly like Phase A (industry pre-filter + pre-filled metadata).
+
+   Finishing hands the chosen account up to the page, plus TWO distinct,
+   independent outputs:
+     - the extracted trusted-domain ALLOW-LIST (or null) — the page
+       persists it through the SAME extractor storage key, so it surfaces
+       through the existing handoff exactly as if curated on the Trusted
+       Domains page; and
+     - the curated competitor BLOCK-LIST (or null) — the page adds it as
+       a separate recipient-domain condition. It is NEVER written to the
+       trusted-domain store; the two lists never cross-contaminate.
+   Neither is auto-added without the SE finishing the wizard.
 
    Close / Escape / a backdrop press cancel the whole wizard (same as
    Phase A's Skip) on either step; "Skip" (step one) skips the wizard and
@@ -31,8 +44,12 @@ import {
   type RefObject,
 } from "react";
 import { Icon } from "../ui/Icon";
+import { Badge } from "../ui/Badge";
+import { Callout } from "../ui/Callout";
 import { parseFile } from "../../lib/parseClient";
 import { isCSV, trustedDomainsFromParsed } from "../../lib/extract";
+import { fetchCompetitors, type CompetitorSuggestion } from "../../lib/competitors";
+import { CompetitorResultList } from "../competitors/CompetitorResultList";
 import type { WizardAccount } from "../../lib/wizard";
 
 export interface WizardProps {
@@ -42,10 +59,18 @@ export interface WizardProps {
   industries: string[];
   /**
    * Land in the Policy Creator with this account's pre-filter + metadata.
-   * `trustedDomains` carries the list extracted from an uploaded enforcer
-   * export (non-empty), or null when the upload was skipped / unusable.
+   * `trustedDomains` carries the ALLOW-LIST extracted from an uploaded
+   * enforcer export (non-empty), or null when the upload was skipped /
+   * unusable. `competitorDomains` carries the curated competitor BLOCK-LIST
+   * the SE selected from the lookup (non-empty), or null when none were
+   * picked. The two are independent and must never be merged.
    */
-  onFinish: (account: WizardAccount, dontShowAgain: boolean, trustedDomains: string[] | null) => void;
+  onFinish: (
+    account: WizardAccount,
+    dontShowAgain: boolean,
+    trustedDomains: string[] | null,
+    competitorDomains: string[] | null,
+  ) => void;
   /** Drop into the normal library; Close, Escape and backdrop route here too. */
   onSkip: (dontShowAgain: boolean) => void;
 }
@@ -77,7 +102,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const [industry, setIndustry] = useState("");
   const [dontShowAgain, setDontShowAgain] = useState(false);
 
-  // Step-two upload state.
+  // Step-two upload state (the trusted ALLOW-LIST section).
   const [stage, setStage] = useState<UploadStage>("idle");
   const [progress, setProgress] = useState(0);
   const [fileName, setFileName] = useState("");
@@ -85,6 +110,16 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [domains, setDomains] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Step-two competitor-lookup state (the BLOCK-LIST section). The lookup is a
+  // paid call, so `cfStatus` only leaves "idle" on an explicit button click —
+  // never on Next. `cfSelected` are the domains the SE has curated to keep.
+  const [cfStatus, setCfStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [cfError, setCfError] = useState("");
+  const [cfSuggestions, setCfSuggestions] = useState<CompetitorSuggestion[]>([]);
+  const [cfNotes, setCfNotes] = useState("");
+  const [cfSelected, setCfSelected] = useState<Set<string>>(new Set());
+  const cfAbortRef = useRef<AbortController | null>(null);
 
   // The dialog box (focus-trap scope), its body (where step-two focus lands),
   // the step-one text field, the close button and the hidden file input.
@@ -124,6 +159,14 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setDomains([]);
     setErrorMsg("");
     parseToken.current++;
+    // Competitor-lookup section: abort any in-flight lookup and clear results.
+    cfAbortRef.current?.abort();
+    cfAbortRef.current = null;
+    setCfStatus("idle");
+    setCfError("");
+    setCfSuggestions([]);
+    setCfNotes("");
+    setCfSelected(new Set());
   }, [open]);
 
   // Move focus into the dialog on open and whenever the step changes, so a
@@ -185,14 +228,57 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     if (valid1) setStep(2);
   };
   const skipWizard = () => onSkip(dontShowAgain);
-  // Commit-timing contract for the trusted-domain list (see onWizardFinish):
-  // the list is handed up — and so persisted to the shared store — ONLY when the
-  // user finishes with "Start in Policy Creator" AND a file fully parsed into a
-  // non-empty list (stage "ready"). "Skip this step" (withList=false), and any
-  // half-finished state (parsing / sheet-pick / empty / error), hand up null and
-  // persist nothing. Close / Escape / backdrop route through onSkip, never here.
-  const finish = (withList: boolean) => onFinish(account(), dontShowAgain, withList && stage === "ready" ? domains : null);
+  // The competitor block-list the SE has curated, in suggestion order. Empty
+  // until they run the lookup and tick rows — so "no lookup" hands up null.
+  const curatedCompetitors = () => cfSuggestions.filter((s) => cfSelected.has(s.domain)).map((s) => s.domain);
+  // Commit-timing contract for BOTH lists (see onWizardFinish): they are handed
+  // up ONLY when the user finishes with "Start in Policy Creator" (withList).
+  //  - the trusted ALLOW-LIST: only when a file fully parsed into a non-empty
+  //    list (stage "ready"); the page persists it to the shared extractor store.
+  //  - the competitor BLOCK-LIST: only the rows the SE selected; the page adds
+  //    it as a SEPARATE recipient-domain condition, never to the trusted store.
+  // "Skip this step" (withList=false) and any half-finished upload (parsing /
+  // sheet-pick / empty / error) hand up null for both. Close / Escape / backdrop
+  // route through onSkip, never here.
+  const finish = (withList: boolean) =>
+    onFinish(
+      account(),
+      dontShowAgain,
+      withList && stage === "ready" ? domains : null,
+      withList && cfSelected.size ? curatedCompetitors() : null,
+    );
   const parsing = stage === "parsing";
+
+  // Step one only requires a non-empty name, but a name of two characters or
+  // fewer is too ambiguous to look up (e.g. "BA"); guard the lookup and prompt
+  // for a fuller name instead of spending a paid call on it.
+  const cfCompany = customer.trim();
+  const cfTooShort = cfCompany.length > 0 && cfCompany.length <= 2;
+
+  // Run the GenAI competitor lookup with the company + industry from step one.
+  // Explicit, on-demand only — wired to a button, never to Next. Mirrors the
+  // standalone CompetitorFinder's abort/guard handling; never throws.
+  const findCompetitors = async () => {
+    if (cfStatus === "loading" || cfTooShort || !cfCompany) return;
+    cfAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    cfAbortRef.current = ctrl;
+    setCfStatus("loading");
+    setCfError("");
+    setCfSuggestions([]);
+    setCfNotes("");
+    setCfSelected(new Set());
+    const result = await fetchCompetitors(cfCompany, industry, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    if (result.ok) {
+      setCfSuggestions(result.suggestions);
+      setCfNotes(result.notes);
+      setCfStatus("done");
+    } else {
+      setCfError(result.message);
+      setCfStatus("error");
+    }
+  };
 
   const replaceFile = () => {
     parseToken.current++;
@@ -251,7 +337,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
       >
         <div className="wiz-head">
           <div className="wiz-mark">
-            <Icon name={step === 1 ? "sparkle" : "upload"} size={16} />
+            <Icon name={step === 1 ? "sparkle" : "layers"} size={16} />
           </div>
           <div className="wiz-titles">
             <div className="wiz-step-badge">Step {step} of 2</div>
@@ -268,11 +354,11 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
             ) : (
               <>
                 <div className="wiz-title" id={titleId}>
-                  Upload an enforcer export (optional)
+                  Build domain lists (optional)
                 </div>
                 <div className="wiz-sub" id={descId}>
-                  Pre-load a trusted-domain list from an export — the same .xlsx/.csv the Trusted Domains tool takes.
-                  It’s parsed locally in your browser; nothing is uploaded. This step is optional.
+                  Two separate, optional lists: a trusted allow-list from an enforcer export, and a competitor
+                  block-list from an AI lookup. They are kept distinct — one permits mail, the other flags it.
                 </div>
               </>
             )}
@@ -330,6 +416,17 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
           </div>
         ) : (
           <div className="wiz-body" ref={bodyRef}>
+            {/* Section 1 — trusted / allowed domains (ALLOW-LIST), from an enforcer-export upload. */}
+            <div className="wiz-section-head">
+              <Icon name="database" size={14} />
+              Trusted / allowed domains
+              <Badge tone="ok">allow-list</Badge>
+            </div>
+            <div className="wiz-hint">
+              Pre-load a trusted-domain allow-list from an enforcer export (the same .xlsx/.csv the Trusted
+              Domains tool takes). It’s parsed locally in your browser; nothing is uploaded.
+            </div>
+
             {stage === "idle" && (
               <UploadDropzone inputRef={fileInputRef} onFile={(f) => void runParse(f).catch(() => {})} />
             )}
@@ -386,8 +483,8 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                   </button>
                 </div>
                 <div className="wiz-note">
-                  These load with your setup; you can review, curate and use them in a recipient-domain condition from
-                  the Policy Creator. Nothing is added automatically.
+                  These load as your trusted <b>allow-list</b>; review, curate and use them in a recipient-domain
+                  condition from the Policy Creator. Nothing is added automatically.
                 </div>
                 <div className="wiz-preview prev-chips">
                   {domains.slice(0, 40).map((d) => (
@@ -416,6 +513,93 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                     <Icon name="upload" size={13} />
                     Try another file
                   </button>
+                </div>
+              </>
+            )}
+
+            <div className="wiz-divider" />
+
+            {/* Section 2 — competitor domains (BLOCK-LIST), from the GenAI lookup. Kept
+                strictly separate from the allow-list above: a different list, a different
+                store (none — it lands as a draft condition), different labelling. */}
+            <div className="wiz-section-head">
+              <Icon name="sparkle" size={14} />
+              Competitor domains
+              <Badge tone="warn">block-list</Badge>
+            </div>
+            <div className="wiz-hint">
+              Look up {cfCompany || "the customer"}’s competitors with AI and curate their domains into a
+              block-list (unauthorised recipients), separate from the allow-list above. Only the company name
+              and industry from step one are sent — this is a paid lookup, so it runs only when you click.
+            </div>
+
+            {cfTooShort && (
+              <div className="wiz-note quiet">
+                <Icon name="info" size={14} />
+                <span>That name is too short to look up. Go back to step one and enter a fuller name.</span>
+              </div>
+            )}
+
+            {cfStatus !== "done" && (
+              <div className="wiz-cf-actions">
+                <button
+                  className="btn primary"
+                  onClick={() => void findCompetitors()}
+                  disabled={cfTooShort || cfStatus === "loading"}
+                >
+                  <Icon name="search" size={14} />
+                  {cfStatus === "loading" ? "Searching…" : `Find competitors for ${cfCompany || "this customer"}`}
+                </button>
+              </div>
+            )}
+
+            {cfStatus === "loading" && (
+              <div className="cf-loading">
+                <span className="spinner" />
+                <span>Finding competitors and verifying domains…</span>
+              </div>
+            )}
+
+            {cfStatus === "error" && (
+              <Callout tone="danger" icon="alert" title="Lookup failed">
+                {cfError}
+              </Callout>
+            )}
+
+            {cfStatus === "done" && (
+              <>
+                <div className="wiz-cf-rerun">
+                  <span className="small muted">
+                    {cfSuggestions.length} suggestion{cfSuggestions.length === 1 ? "" : "s"} for {cfCompany}
+                  </span>
+                  <button className="btn xs ghost" onClick={() => void findCompetitors()}>
+                    <Icon name="reset" size={12} />
+                    Search again
+                  </button>
+                </div>
+                {cfSuggestions.length > 0 ? (
+                  <CompetitorResultList
+                    suggestions={cfSuggestions}
+                    selected={cfSelected}
+                    onSelectedChange={setCfSelected}
+                    notes={cfNotes}
+                  />
+                ) : (
+                  <div className="wiz-note quiet">
+                    <Icon name="info" size={14} />
+                    <span>
+                      {cfNotes ||
+                        "No competitor suggestions. Go back to refine the company name or industry, then try again."}
+                    </span>
+                  </div>
+                )}
+                <div className="wiz-note">
+                  <Icon name="info" size={14} />
+                  <span>
+                    Selected domains become a <b>competitor block-list</b> condition in your policy draft —
+                    separate from the trusted allow-list, never written to the trusted-domain store. Nothing is
+                    added until you finish.
+                  </span>
                 </div>
               </>
             )}

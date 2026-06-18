@@ -41,34 +41,46 @@ Customer setup wizard's optional upload (see "Handoff between the pages") — th
 that list in the same curate UI for review and refinement, instead of an empty dropzone that would hide
 it. "Upload a file" starts over with a fresh export.
 
-### Find competitors (Policy Creator)
+### Find competitors (the competitor block-list)
 
-A "Find competitors" panel on the Policy Creator looks up a company's competitors and their primary
-corporate email domains. You type a company or customer name (and an optional industry); the app asks
-Claude, through a serverless function, for the competitors from its own knowledge, verifies the
+The GenAI competitor lookup is the single competitor mechanism and a first-class, visible feature (no
+feature flag). It looks up a company's competitors and their primary corporate email domains: the app
+asks Claude, through a serverless function, for the competitors from its own knowledge, verifies the
 returned domains by DNS, and shows them as suggestions with a confidence chip and a verified /
-unverified flag. You review the list, check the domains you want, and click Add to curate them into a
-recipient-domain condition. Nothing is auto applied, and unverified or unchecked rows are never added
-silently. (A name of two characters or fewer is too ambiguous to look up — the panel asks for a fuller
-name first.)
+unverified flag. You review the list, check the domains you want, and curate them into a **competitor
+block-list** recipient-domain condition. Nothing is auto applied, and unverified or unchecked rows are
+never added silently (unverified rows are flagged, not dropped). A name of two characters or fewer is
+too ambiguous to look up — you are asked for a fuller name first.
+
+It is reachable from two places:
+
+- **The Customer setup wizard.** Step two has an explicit, on-demand "Find competitors for
+  &lt;company&gt;" button that runs the lookup with the company name + industry from step one. It is a
+  paid call, so it fires only on click — never automatically on Next. The domains you keep are carried
+  into the policy draft as a competitor block-list condition when you finish the wizard.
+- **The Policy Creator's Recipients view**, for when you are not running the wizard: the same lookup,
+  inline beside the seed recipient packs.
+
+This competitor **block-list** is the deliberate opposite of the trusted **allow-list** (see "Handoff
+between the pages"): the two are labelled distinctly, kept as separate conditions, and the competitor
+list is never written to the trusted-domain store.
 
 Only the company name and industry you type are sent to the lookup service. Uploaded files and the
-extractor stay in your browser and are never sent. This panel is the single exception to "no backend"
-below. (The Find-competitors entry point is currently hidden behind a feature flag, defaulted off —
-see "Feature flags" below. The serverless function and its tests stay in the repo.)
+extractor stay in your browser and are never sent. This lookup is the single exception to "no backend"
+below.
 
 ### Feature flags
 
-Two surfaces are kept in the codebase but switched off in the UI, gated by `src/lib/features.ts`:
+One surface is kept in the codebase but switched off in the UI, gated by `src/lib/features.ts`:
 
 | Flag | Default | Hides |
 | --- | --- | --- |
-| `FEATURE_COMPETITOR_FINDER` | `false` | the "Find competitors" entry point in the library's Recipients view |
 | `FEATURE_TEST_PANEL` | `false` | the "paste a sample to test" panel and the per-row "Test this" action |
 
-Re-enabling either is a single edit: flip its constant to `true` in `src/lib/features.ts`. The
-components (`CompetitorFinder`, `TestPanel`), the `api/competitors.ts` function, and all of their tests
-remain in the repo regardless of the flags.
+Re-enabling it is a single edit: flip the constant to `true` in `src/lib/features.ts`. The `TestPanel`
+component and its tests remain in the repo regardless of the flag. (The competitor lookup is no longer
+gated — it is a first-class feature reachable from the wizard and the Recipients view; see "Find
+competitors" above.)
 
 ### Handoff between the pages
 
@@ -87,6 +99,13 @@ wizard, and any half-finished or empty/unreadable upload write nothing — a ski
 never silently persists a partial list, and an empty parse never overwrites an existing one. The
 extractor page likewise only writes on the explicit "Use in Policy Creator" action; merely opening it
 on a restored list does not re-write the store.
+
+**The competitor block-list is separate, and never persisted.** The wizard's competitor step and the
+Policy Creator's Find-competitors panel produce a competitor *block-list*, not a trusted list. It is
+added straight to the policy draft as its own recipient-domain condition and is **never** written to
+`aedlp_trusted_domains` (or any other store). The trusted allow-list and the competitor block-list are
+two distinct, clearly-labelled outputs — one permits mail, the other flags it — and they never
+cross-contaminate. Only the trusted allow-list is persisted.
 
 The theme choice is stored under `aedlp-theme`, and the wizard's own front-door state under
 `aedlp_wizard_*`. Those, plus `aedlp_trusted_domains`, are the only persistence the app uses.
@@ -172,7 +191,7 @@ src/
     ui/                     shared primitives (Icon, Badge, Card, Callout, CopyButton, RegexHighlight)
     library/               the detector library panel
     policy/                the policy draft and test panel
-    competitors/           the Find-competitors modal
+    competitors/           the Find-competitors panel + shared reviewable result list
   pages/
     PolicyCreator.tsx      the Policy Creator page
     Extractor.tsx          the Trusted Domain Extractor page

@@ -116,17 +116,24 @@ export async function fetchCompetitors(
 
 /**
  * Build a recipient-domain condition from the user-selected competitor domains.
- * This is a flag/review list (recommended action "warn & require justification")
- * curated from research — never dropped straight into a blocking policy.
+ *
+ * This is a BLOCK list — domains mail should NOT go to (unauthorised /
+ * competitor recipients) — the deliberate opposite of the trusted allow-list
+ * curated from an enforcer export (see lib/trusted.ts). The two are kept
+ * strictly separate: this condition carries its own stable id, its own
+ * "block-list" labelling, and is never written to the `aedlp_trusted_domains`
+ * store. The recommended action is "warn & require justification" (not a hard
+ * block) because the domains are model-suggested and DNS-checked, not vetted —
+ * a reviewer should confirm before tightening it to a block.
  */
 export function makeCompetitorCondition(domains: string[]): Condition {
   return {
     id: COMPETITOR_CONDITION_ID,
     conditionType: "recipient_domain",
-    displayName: "Competitor domains (from lookup)",
-    aliases: ["competitor", "competitor domains", "rival", "lookup competitors"],
+    displayName: "Competitor domains — block-list (from lookup)",
+    aliases: ["competitor", "competitor domains", "competitor block-list", "rival", "unauthorised recipients", "lookup competitors"],
     description:
-      "Recipient address on a competitor's domain, curated from the competitor lookup. Review and tune before deploying — domains are model-suggested and DNS-checked.",
+      "Block-list of competitor / unauthorised recipient domains, curated from the GenAI competitor lookup. Flags outbound mail addressed to a competitor's domain. This is the opposite of the trusted allow-list — keep the two separate. Review and tune before deploying: domains are model-suggested and DNS-checked, not vetted.",
     country: "GLOBAL",
     regionLabel: "Global",
     category: "Recipients & destinations",
@@ -140,6 +147,7 @@ export function makeCompetitorCondition(domains: string[]): Condition {
     recommendedAction: "warn_require_justification",
     falsePositiveRisk: "low",
     notes: [
+      "This is a block-list (competitor / unauthorised recipients) — NOT a trusted allow-list, and never written to the trusted-domain store.",
       "Curated from the competitor lookup — verify each domain before relying on it.",
       "Domains are suggested by Claude from its own knowledge and may be wrong or out of date.",
     ],

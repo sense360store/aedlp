@@ -14,7 +14,7 @@ import { buildEffectiveRegex } from "../lib/regex";
 import { loadTrustedDomains, saveTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
 import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
-import { FEATURE_COMPETITOR_FINDER, FEATURE_TEST_PANEL } from "../lib/features";
+import { FEATURE_TEST_PANEL } from "../lib/features";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
 import {
   PolicyDraft,
@@ -207,18 +207,28 @@ export default function PolicyCreator() {
   /* ----- wizard front door -----
      Finish: remember the account, switch on its industry pre-filter (clearable
      by the user — a pre-filter, not a lock), and pre-fill the policy metadata.
-     No conditions are ever added. If the optional upload step produced a
-     trusted-domain list, persist it through the SAME extractor storage key and
-     refresh, so it surfaces through the existing handoff exactly as if it had
-     been curated on the Trusted Domains page — never auto-added to a condition.
-     With no list (skipped or unusable file) the landing is Phase A, unchanged.
-     Skip / Close / Escape: leave the library and draft untouched. Either action
-     can also set the global "don't show again" preference. The re-open control
-     clears that preference and shows the wizard again, so "skippable" never
-     means "gone". */
-  const onWizardFinish = (account: WizardAccount, dontShowAgain: boolean, trustedDomains: string[] | null) => {
+     The wizard's optional step two can produce TWO independent, clearly-separate
+     outputs — and they never cross-contaminate:
+       - a trusted ALLOW-LIST (enforcer-export upload): persisted through the SAME
+         extractor storage key and refreshed, so it surfaces through the existing
+         handoff exactly as if curated on the Trusted Domains page; and
+       - a competitor BLOCK-LIST (GenAI lookup): added as a SEPARATE recipient-domain
+         condition via onAddCompetitors. It is NEVER written to the trusted-domain
+         store (saveTrustedDomains) — only the allow-list is.
+     Neither is added without finishing; the metadata pre-fill adds no detectors.
+     With neither list the landing is Phase A, unchanged. Skip / Close / Escape:
+     leave the library and draft untouched. Either action can also set the global
+     "don't show again" preference. The re-open control clears that preference and
+     shows the wizard again, so "skippable" never means "gone". */
+  const onWizardFinish = (
+    account: WizardAccount,
+    dontShowAgain: boolean,
+    trustedDomains: string[] | null,
+    competitorDomains: string[] | null,
+  ) => {
     recordCompletedAccount(account);
     setGlobalDismiss(dontShowAgain);
+    // Trusted ALLOW-LIST → the shared trusted-domain store (and nowhere else).
     if (trustedDomains && trustedDomains.length) {
       saveTrustedDomains(trustedDomains);
       setTrusted(loadTrustedDomains());
@@ -233,6 +243,11 @@ export default function PolicyCreator() {
       descDirty: true,
       tagsDirty: true,
     }));
+    // Competitor BLOCK-LIST → a separate recipient-domain condition only. This
+    // deliberately does NOT touch saveTrustedDomains: the two lists stay distinct.
+    if (competitorDomains && competitorDomains.length) {
+      onAddCompetitors(competitorDomains);
+    }
     setWizardOpen(false);
   };
   const onWizardSkip = (dontShowAgain: boolean) => {
@@ -312,7 +327,7 @@ export default function PolicyCreator() {
             addedIds={addedIds}
             onToggle={onToggle}
             onTest={FEATURE_TEST_PANEL ? onTest : undefined}
-            onAddCompetitors={FEATURE_COMPETITOR_FINDER ? onAddCompetitors : undefined}
+            onAddCompetitors={onAddCompetitors}
           />
         </div>
 

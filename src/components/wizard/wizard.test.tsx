@@ -96,7 +96,7 @@ describe("Wizard step one", () => {
     fillStepOne("Globex", "Financial services");
     const input = screen.getByPlaceholderText(/Globex Corporation/);
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByText("Upload an enforcer export (optional)")).toBeTruthy();
+    expect(screen.getByText("Build domain lists (optional)")).toBeTruthy();
     expect(screen.getByText("Step 2 of 2")).toBeTruthy();
     expect(onFinish).not.toHaveBeenCalled();
   });
@@ -151,7 +151,7 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
     const { onFinish } = setup();
     goToStepTwo("Globex", "Financial services");
     fireEvent.click(screen.getByRole("button", { name: "Skip this step" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null, null);
     expect(mockParseFile).not.toHaveBeenCalled();
   });
 
@@ -159,7 +159,7 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
     const { onFinish } = setup();
     goToStepTwo();
     fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null, null);
   });
 
   it("Back returns to step one without finishing", () => {
@@ -184,7 +184,7 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
     expect(screen.getByText("vendor.io")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, EXTRACTED);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, EXTRACTED, null);
   });
 
   it("shows the existing progress indicator while parsing", async () => {
@@ -241,7 +241,7 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
 
     await screen.findByText(/No usable trusted domains/i);
     fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null, null);
   });
 
   it("carries the don't-show-again choice through a step-two finish", async () => {
@@ -252,7 +252,7 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
     uploadFile(new File(["data"], "enforcer.xlsx"));
     await screen.findByText(/2 trusted domains found/i);
     fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, true, EXTRACTED);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, true, EXTRACTED, null);
   });
 
   it("Escape on step two cancels the whole wizard (onSkip), never finishing", () => {
@@ -285,6 +285,92 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
       globalThis.fetch = realFetch;
       xhrOpen.mockRestore();
     }
+  });
+});
+
+/* ============ step two: competitor lookup (the BLOCK-LIST output) ============ */
+describe("Wizard step two — competitor lookup (block-list)", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function httpJson(status: number, body: unknown): Response {
+    return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+  }
+  const CF_SAMPLE = {
+    suggestions: [
+      { name: "Globex Rival", domain: "globex-rival.example", confidence: "high", verified: true, rationale: "Direct competitor." },
+      { name: "Initech", domain: "initech.example", confidence: "medium", verified: false, rationale: "Adjacent." },
+    ],
+    notes: "Found 2 competitor suggestions.",
+  };
+
+  it("offers an explicit, company-named lookup button and does NOT auto-run on Next", () => {
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    setup();
+    goToStepTwo("Globex", "Financial services");
+    // The button names the company entered in step one…
+    expect(screen.getByRole("button", { name: "Find competitors for Globex" })).toBeTruthy();
+    // …and reaching the step via Next never spends the paid call on its own.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("runs the lookup with the wizard's company + industry only when the button is clicked", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    setup();
+    goToStepTwo("Globex", "Financial services");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors for Globex" }));
+    await screen.findByText("globex-rival.example");
+
+    // Fired exactly once, carrying the company + industry from step one.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ company: "Globex", industry: "Financial services" });
+    // Unverified rows are flagged, never dropped.
+    expect(screen.getByText("Verified")).toBeTruthy();
+    expect(screen.getByText("Unverified")).toBeTruthy();
+  });
+
+  it("carries the SELECTED competitor domains up on finish as a separate block-list (trusted stays null)", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    const { onFinish } = setup();
+    goToStepTwo("Globex", "Financial services");
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors for Globex" }));
+    await screen.findByText("globex-rival.example");
+
+    // Curate one competitor domain, then finish.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Select Globex Rival/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+
+    // 4th arg = curated competitor block-list; 3rd arg (trusted allow-list) = null (no upload).
+    expect(onFinish).toHaveBeenCalledWith(
+      { customer: "Globex", industry: "Financial services" },
+      false,
+      null,
+      ["globex-rival.example"],
+    );
+  });
+
+  it("hands up null competitors when the lookup ran but nothing was selected (no auto-add)", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    const { onFinish } = setup();
+    goToStepTwo("Globex", "Financial services");
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors for Globex" }));
+    await screen.findByText("globex-rival.example");
+    // Nothing ticked → finishing carries no block-list (null), not an empty array.
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+    expect(onFinish).toHaveBeenCalledWith(
+      { customer: "Globex", industry: "Financial services" },
+      false,
+      null,
+      null,
+    );
   });
 });
 
