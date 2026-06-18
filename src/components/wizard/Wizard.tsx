@@ -46,8 +46,10 @@ import {
 import { Icon } from "../ui/Icon";
 import { Badge } from "../ui/Badge";
 import { Callout } from "../ui/Callout";
+import { DiagnosticBanner } from "../ui/DiagnosticBanner";
 import { parseFile } from "../../lib/parseClient";
 import { isCSV, isTooLargeError, trustedDomainsFromParsed } from "../../lib/extract";
+import { diagnosticsFromError, type ParseDiagnostics } from "../../lib/diagnostics";
 import { fetchCompetitors, type CompetitorSuggestion } from "../../lib/competitors";
 import { CompetitorResultList } from "../competitors/CompetitorResultList";
 import type { WizardAccount } from "../../lib/wizard";
@@ -111,6 +113,9 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [domains, setDomains] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
+  // Structure-only diagnostics for a failed parse — drives the failure banner's
+  // detail + the local "Download diagnostic"; null unless a genuine read failed.
+  const [diagnostics, setDiagnostics] = useState<ParseDiagnostics | null>(null);
 
   // Step-two competitor-lookup state (the BLOCK-LIST section). The lookup is a
   // paid call, so `cfStatus` only leaves "idle" on an explicit button click —
@@ -160,6 +165,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setPendingFile(null);
     setDomains([]);
     setErrorMsg("");
+    setDiagnostics(null);
     parseToken.current++;
     // Competitor-lookup section: abort any in-flight lookup and clear results.
     cfAbortRef.current?.abort();
@@ -199,6 +205,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   const runParse = useCallback(async (f: File, sheetName?: string) => {
     const token = ++parseToken.current;
     setErrorMsg("");
+    setDiagnostics(null);
     setProgress(0);
     setRows(0);
     setFileName(f.name);
@@ -221,8 +228,10 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
       setStage(doms.length ? "ready" : "empty");
     } catch (e) {
       if (token !== parseToken.current) return;
+      const msg = (e as Error)?.message || String(e);
       setDomains([]);
-      setErrorMsg((e as Error)?.message || String(e));
+      setErrorMsg(msg);
+      setDiagnostics(diagnosticsFromError(e, f, msg));
       setStage("error");
     }
   }, []);
@@ -297,6 +306,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setPendingFile(null);
     setDomains([]);
     setErrorMsg("");
+    setDiagnostics(null);
   };
 
   // Trap Tab within the dialog so focus can't leak to the page behind it: wrap
@@ -507,6 +517,12 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
 
             {(stage === "empty" || stage === "error") && (
               <>
+                {/* A genuine read failure shows the structure-only diagnostic banner
+                    (with a local download); a too-large file keeps the calm
+                    "export as CSV" guidance instead, never the banner. */}
+                {stage === "error" && diagnostics && !isTooLargeError(errorMsg) && (
+                  <DiagnosticBanner diagnostics={diagnostics} />
+                )}
                 <div className="wiz-note quiet">
                   <Icon name="info" size={14} />
                   <span>
@@ -514,7 +530,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                       ? "No usable trusted domains were found in that file."
                       : isTooLargeError(errorMsg)
                         ? errorMsg // already a friendly "export as CSV" suggestion
-                        : `Couldn’t read that file${errorMsg ? `: ${errorMsg}` : "."}`}{" "}
+                        : "That file couldn’t be used."}{" "}
                     You can continue without a trusted list, or try another file.
                   </span>
                 </div>

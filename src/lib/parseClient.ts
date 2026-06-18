@@ -7,8 +7,23 @@
    ============================================================ */
 import type { ParsedResult } from "./extract";
 import type { ParseResponse } from "./parse-protocol";
+import { baselineDiagnostics, type ParseDiagnostics } from "./diagnostics";
 
 export type ParseOutcome = { kind: "result"; result: ParsedResult } | { kind: "sheet"; names: string[] };
+
+/**
+ * Rejection carrying the privacy-safe diagnostics (structure only) for a failed
+ * parse, so the page and the wizard can render the failure banner and offer the
+ * local "Download diagnostic" from the same place they already catch the error.
+ */
+export class ParseFailure extends Error {
+  readonly diagnostics: ParseDiagnostics;
+  constructor(message: string, diagnostics: ParseDiagnostics) {
+    super(message);
+    this.name = "ParseFailure";
+    this.diagnostics = diagnostics;
+  }
+}
 
 export interface ParseOptions {
   sheetName?: string;
@@ -38,11 +53,16 @@ export function parseFile(file: File, opts: ParseOptions = {}): Promise<ParseOut
           finish(() => resolve({ kind: "result", result: msg.result }));
           break;
         case "error":
-          finish(() => reject(new Error(msg.message)));
+          finish(() => reject(new ParseFailure(msg.message, msg.diagnostics)));
           break;
       }
     };
-    worker.onerror = (e) => finish(() => reject(new Error(e.message || "The file could not be parsed.")));
+    worker.onerror = (e) => {
+      // The worker died before it could send its own diagnostics; build a
+      // baseline one from the File so the banner + download still work.
+      const message = e.message || "The file could not be parsed.";
+      finish(() => reject(new ParseFailure(message, baselineDiagnostics(file, message))));
+    };
     worker.postMessage({ kind: "parse", file, sheetName: opts.sheetName });
   });
 }
