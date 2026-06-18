@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { Icon } from "../ui/Icon";
 import { CopyButton } from "../ui/CopyButton";
+import { DomainSelectList } from "../ui/DomainSelectList";
 import { RegexHighlight } from "../ui/RegexHighlight";
 import { typeTone, typeShort } from "../../lib/tones";
 import { conditionCopyValue } from "../../lib/match";
@@ -212,14 +213,7 @@ function ConditionRow({ c, index, total, operator, onRemove, onToggleBoundary }:
         ) : c.conditionType === "keyword_pattern" ? (
           <code className="pattern">{value}</code>
         ) : c.conditionType === "recipient_domain" ? (
-          <div className="prev-chips">
-            {c.domains.slice(0, 8).map((k) => (
-              <span key={k} className="prev-chip mono">
-                {k}
-              </span>
-            ))}
-            {c.domains.length > 8 && <span className="prev-more">+{c.domains.length - 8} domains</span>}
-          </div>
+          <DomainSelectList domains={c.domains} collapsedCount={8} />
         ) : c.conditionType === "file_extension" ? (
           <div className="prev-chips">
             {c.extensions.slice(0, 12).map((k) => (

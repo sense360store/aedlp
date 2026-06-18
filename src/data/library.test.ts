@@ -3,13 +3,19 @@ import { AEDLP_DATA } from "./library";
 import type { ConditionType } from "../types";
 
 /**
- * Phase 0 parity guard: the ported library must match the prototype data.js
- * in detector count and condition-type coverage. This replaces the temporary
- * acceptance assertion and stays as a regression check.
+ * Library count guard: the prototype data.js ported 71 detectors; Phase 1
+ * adds 22 regex detectors (UK, EU core, US), Phase 2 adds 10 more
+ * (Aerospace, Defence & Export Control: 4 regex, 4 keyword, 2 keyword_pattern),
+ * the batch-1 competitor packs add 2 recipient_domain detectors
+ * (Aerospace & Defence, Financial Services), and the UK PII batch adds 5
+ * detectors (3 regex: gb-postcode, gb-mobile, gb-dob; 2 keyword_pattern:
+ * kp-gb-identity-bundle, kp-gb-special-category) for a total of 110. This pins
+ * the count and condition-type coverage so a later edit cannot silently drop
+ * or duplicate a detector.
  */
 describe("AEDLP_DATA library (prototype parity)", () => {
-  it("ports the full prototype detector set (71 detectors)", () => {
-    expect(AEDLP_DATA.detectors).toHaveLength(71);
+  it("holds the prototype set plus the Phase 1, Phase 2, competitor-pack and UK PII expansions (110 detectors)", () => {
+    expect(AEDLP_DATA.detectors).toHaveLength(110);
   });
 
   it("covers all five condition types", () => {
@@ -29,10 +35,10 @@ describe("AEDLP_DATA library (prototype parity)", () => {
       counts[d.conditionType] = (counts[d.conditionType] || 0) + 1;
     }
     expect(counts).toEqual({
-      regular_expression: 33,
-      keyword: 11,
-      keyword_pattern: 7,
-      recipient_domain: 3,
+      regular_expression: 62,
+      keyword: 15,
+      keyword_pattern: 11,
+      recipient_domain: 5,
       file_extension: 17,
     });
   });

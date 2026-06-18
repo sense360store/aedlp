@@ -11,8 +11,10 @@ import { useTheme } from "../theme";
 import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
 import { buildEffectiveRegex } from "../lib/regex";
-import { loadTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
+import { loadTrustedDomains, saveTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
+import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
+import { FEATURE_COMPETITOR_FINDER, FEATURE_TEST_PANEL } from "../lib/features";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
 import {
   PolicyDraft,
@@ -21,6 +23,18 @@ import {
   type DraftSuggestions,
 } from "../components/policy/PolicyDraft";
 import { TestPanel } from "../components/policy/TestPanel";
+import { Wizard } from "../components/wizard/Wizard";
+import {
+  decideLanding,
+  qualifyingIndustries,
+  recordCompletedAccount,
+  setGlobalDismiss,
+  clearGlobalDismiss,
+  wizardPolicyName,
+  wizardPolicyDescription,
+  wizardPolicyTags,
+  type WizardAccount,
+} from "../lib/wizard";
 import type { Condition, Detector, RecommendedAction } from "../types";
 
 function makeCondition(d: Detector): Condition {
@@ -30,25 +44,9 @@ function makeCondition(d: Detector): Condition {
   return { ...d };
 }
 
-export default function PolicyCreator() {
-  const [theme, setTheme] = useTheme();
-
-  const [filters, setFilters] = useState<LibraryFilters>({
-    query: "",
-    type: "all",
-    category: "all",
-    region: "all",
-    industry: "all",
-  });
-  const [added, setAdded] = useState<Condition[]>([]);
-  const [operator, setOperator] = useState<string>("OR");
-  const [sample, setSample] = useState("");
-  const [focus, setFocus] = useState<Detector | null>(null);
-  // Trusted-domain list handed over from the extractor (localStorage). Read
-  // once on mount and on explicit refresh — never written from this page.
-  const [trusted, setTrusted] = useState<string[]>([]);
-  useEffect(() => setTrusted(loadTrustedDomains()), []);
-  const [draft, setDraft] = useState<PolicyDraftState>({
+/** A pristine draft, used both on a plain landing and as the prefill base. */
+function emptyDraft(): PolicyDraftState {
+  return {
     name: "",
     description: "",
     tags: [],
@@ -58,7 +56,56 @@ export default function PolicyCreator() {
     descDirty: false,
     tagsDirty: false,
     actionDirty: false,
+  };
+}
+
+/**
+ * Draft pre-filled from a wizard account. The pre-filled fields are marked
+ * dirty so they read as deliberate metadata: the auto-suggest pass leaves them
+ * alone, and adding detectors later never clobbers the customer's policy name.
+ */
+function prefilledDraft(a: WizardAccount): PolicyDraftState {
+  return {
+    ...emptyDraft(),
+    name: wizardPolicyName(a),
+    description: wizardPolicyDescription(a),
+    tags: wizardPolicyTags(a),
+    nameDirty: true,
+    descDirty: true,
+    tagsDirty: true,
+  };
+}
+
+export default function PolicyCreator() {
+  const [theme, setTheme] = useTheme();
+
+  // Front-door wizard. The landing decision (read once from localStorage)
+  // chooses between showing the wizard and dropping straight into the library,
+  // optionally with a previously-completed account's pre-filter + metadata
+  // reapplied. Corrupt/missing state falls back to showing the wizard.
+  const [landing] = useState(() => decideLanding());
+  const initialAccount = landing.kind === "library" ? landing.account : null;
+  const [wizardOpen, setWizardOpen] = useState(landing.kind === "wizard");
+  const industries = useMemo(() => qualifyingIndustries(), []);
+
+  const [filters, setFilters] = useState<LibraryFilters>({
+    query: "",
+    type: "all",
+    category: "all",
+    region: "all",
+    industry: initialAccount?.industry ?? "all",
   });
+  const [added, setAdded] = useState<Condition[]>([]);
+  const [operator, setOperator] = useState<string>("OR");
+  const [sample, setSample] = useState("");
+  const [focus, setFocus] = useState<Detector | null>(null);
+  // Trusted-domain list handed over from the extractor (localStorage). Read
+  // once on mount and on explicit refresh — never written from this page.
+  const [trusted, setTrusted] = useState<string[]>([]);
+  useEffect(() => setTrusted(loadTrustedDomains()), []);
+  const [draft, setDraft] = useState<PolicyDraftState>(() =>
+    initialAccount ? prefilledDraft(initialAccount) : emptyDraft(),
+  );
 
   /* ----- library filtering (base = filters minus type, so the tabs can count) ----- */
   const base = useMemo(
@@ -143,6 +190,60 @@ export default function PolicyCreator() {
     );
   };
 
+  /* ----- competitor-lookup handoff -----
+     The Find-competitors surface returns reviewed, user-selected domains;
+     load (or replace) them as a recipient-domain condition. Like the trusted
+     handoff, this only ever runs on an explicit user action. */
+  const onAddCompetitors = (domains: string[]) => {
+    if (!domains.length) return;
+    const cond = makeCompetitorCondition(domains);
+    setAdded((prev) =>
+      prev.some((c) => c.id === COMPETITOR_CONDITION_ID)
+        ? prev.map((c) => (c.id === COMPETITOR_CONDITION_ID ? cond : c))
+        : [...prev, cond],
+    );
+  };
+
+  /* ----- wizard front door -----
+     Finish: remember the account, switch on its industry pre-filter (clearable
+     by the user — a pre-filter, not a lock), and pre-fill the policy metadata.
+     No conditions are ever added. If the optional upload step produced a
+     trusted-domain list, persist it through the SAME extractor storage key and
+     refresh, so it surfaces through the existing handoff exactly as if it had
+     been curated on the Trusted Domains page — never auto-added to a condition.
+     With no list (skipped or unusable file) the landing is Phase A, unchanged.
+     Skip / Close / Escape: leave the library and draft untouched. Either action
+     can also set the global "don't show again" preference. The re-open control
+     clears that preference and shows the wizard again, so "skippable" never
+     means "gone". */
+  const onWizardFinish = (account: WizardAccount, dontShowAgain: boolean, trustedDomains: string[] | null) => {
+    recordCompletedAccount(account);
+    setGlobalDismiss(dontShowAgain);
+    if (trustedDomains && trustedDomains.length) {
+      saveTrustedDomains(trustedDomains);
+      setTrusted(loadTrustedDomains());
+    }
+    setFilters((f) => ({ ...f, industry: account.industry }));
+    setDraft((d) => ({
+      ...d,
+      name: wizardPolicyName(account),
+      description: wizardPolicyDescription(account),
+      tags: wizardPolicyTags(account),
+      nameDirty: true,
+      descDirty: true,
+      tagsDirty: true,
+    }));
+    setWizardOpen(false);
+  };
+  const onWizardSkip = (dontShowAgain: boolean) => {
+    setGlobalDismiss(dontShowAgain);
+    setWizardOpen(false);
+  };
+  const onReopenWizard = () => {
+    clearGlobalDismiss();
+    setWizardOpen(true);
+  };
+
   const set: DraftSetters = {
     name: (v) => setDraft((d) => ({ ...d, name: v, nameDirty: true })),
     description: (v) => setDraft((d) => ({ ...d, description: v, descDirty: true })),
@@ -173,6 +274,17 @@ export default function PolicyCreator() {
           </div>
         </div>
         <TopNav />
+        <button
+          className="btn sm wiz-reopen"
+          onClick={onReopenWizard}
+          // Keep an accessible name even at narrow widths, where the CSS hides
+          // the visible label and leaves only the icon.
+          aria-label="Customer setup — open the policy wizard"
+          title="Set up a policy for a customer (re-open the wizard)"
+        >
+          <Icon name="sparkle" size={14} />
+          <span>Customer setup</span>
+        </button>
         <div className="topbar-spacer"></div>
         <span className="added-pill">
           <Icon name="layers" size={13} />
@@ -199,7 +311,8 @@ export default function PolicyCreator() {
             total={base.length}
             addedIds={addedIds}
             onToggle={onToggle}
-            onTest={onTest}
+            onTest={FEATURE_TEST_PANEL ? onTest : undefined}
+            onAddCompetitors={FEATURE_COMPETITOR_FINDER ? onAddCompetitors : undefined}
           />
         </div>
 
@@ -219,17 +332,23 @@ export default function PolicyCreator() {
             onUseTrusted={onUseTrusted}
             onRefreshTrusted={onRefreshTrusted}
           />
-          <div id="test-anchor"></div>
-          <TestPanel
-            conditions={added}
-            operator={operator}
-            sample={sample}
-            setSample={setSample}
-            focus={focus}
-            clearFocus={() => setFocus(null)}
-          />
+          {FEATURE_TEST_PANEL && (
+            <>
+              <div id="test-anchor"></div>
+              <TestPanel
+                conditions={added}
+                operator={operator}
+                sample={sample}
+                setSample={setSample}
+                focus={focus}
+                clearFocus={() => setFocus(null)}
+              />
+            </>
+          )}
         </div>
       </main>
+
+      <Wizard open={wizardOpen} industries={industries} onFinish={onWizardFinish} onSkip={onWizardSkip} />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { AEDLP_DATA } from "../../data/library";
 import { PolicyDraft, type PolicyDraftState, type DraftSetters } from "./PolicyDraft";
 import { TestPanel } from "./TestPanel";
@@ -173,6 +174,39 @@ describe("PolicyDraft", () => {
       />,
     );
     expect(kwRender.container.querySelector(".cond-boundary")).toBeNull();
+  });
+
+  it("gives a recipient-domain condition select/copy-all controls with an expandable list", async () => {
+    const rcp = makeCond(det("rcp-competitors-aerospace"));
+    if (rcp.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+
+    const { container } = render(
+      <MemoryRouter>
+        <PolicyDraft
+          draft={baseDraft}
+          set={noopSetters}
+          conditions={[rcp]}
+          operator="OR"
+          setOperator={() => {}}
+          onRemove={() => {}}
+          onToggleBoundary={() => {}}
+          onClear={() => {}}
+          suggestions={emptySug}
+        />
+      </MemoryRouter>,
+    );
+    const row = container.querySelector(".cond-row") as HTMLElement;
+    // Compact in the draft: a few chips plus a "+N domains — show all" expander.
+    expect(row.querySelectorAll(".prev-chip.pick")).toHaveLength(8);
+    fireEvent.click(within(row).getByRole("button", { name: /show all/i }));
+    expect(row.querySelectorAll(".prev-chip.pick")).toHaveLength(rcp.domains.length);
+
+    // Copy-all yields the entire domain list, ready for the AEDLP field.
+    fireEvent.click(within(row).getByRole("button", { name: "Copy all domains" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(rcp.domains.join("\n")));
   });
 
   it("the remove button calls onRemove with the condition id", () => {

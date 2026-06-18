@@ -2,11 +2,10 @@
    Ported from handoff project/app/library.jsx. */
 import { Icon } from "../ui/Icon";
 import { CopyButton } from "../ui/CopyButton";
+import { DomainSelectList } from "../ui/DomainSelectList";
 import { RegexHighlight } from "../ui/RegexHighlight";
 import { serializeKeywordPattern } from "../../lib/match";
 import type { Detector } from "../../types";
-
-const RECIPIENT_CAP = 48;
 
 export function Inspector({ d }: { d: Detector }) {
   return (
@@ -59,20 +58,8 @@ export function Inspector({ d }: { d: Detector }) {
 
       {d.conditionType === "recipient_domain" && (
         <>
-          <div className="insp-label">
-            Recipient domains — match any ({d.domains.length})
-            <CopyButton value={() => d.domains.join("\n")} label="Copy list" />
-          </div>
-          <div className="prev-chips full">
-            {d.domains.slice(0, RECIPIENT_CAP).map((k) => (
-              <span key={k} className="prev-chip mono">
-                {k}
-              </span>
-            ))}
-            {d.domains.length > RECIPIENT_CAP && (
-              <span className="prev-more">+{d.domains.length - RECIPIENT_CAP} more — copy list to see all</span>
-            )}
-          </div>
+          <div className="insp-label">Recipient domains — match any ({d.domains.length})</div>
+          <DomainSelectList domains={d.domains} collapsedCount={60} />
           <div className="insp-meta-line">Flags a recipient address on any listed domain · case-insensitive</div>
         </>
       )}

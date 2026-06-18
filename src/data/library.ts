@@ -19,6 +19,7 @@ import type {
   BoundaryStrategy,
 } from "../types";
 import { AEDLP_RECIPIENT_DOMAINS } from "./recipients";
+import { ukPiiRegexDetectors, ukPiiKeywordPatternDetectors } from "./uk-pii-detectors";
 
 type RxInput = Omit<RegexDetector, "conditionType" | "contextKeywords"> &
   Partial<Pick<RegexDetector, "contextKeywords">>;
@@ -269,7 +270,447 @@ const regexDetectors = [
     description: "17-character vehicle identification number.", country: "GLOBAL", regionLabel: "Global", category: "Personal data (PII)",
     regex: "\\b[A-HJ-NPR-Z0-9]{17}\\b", contextKeywords: ["VIN", "vehicle", "chassis"],
     positiveExamples: ["VIN: 1HGCM82633A004352"], negativeExamples: ["Ref ABC123"],
-    recommendedAction: "silently_track", falsePositiveRisk: "high", notes: ["17-char alphanumerics also appear in other IDs — pair with VIN context keywords."] })
+    recommendedAction: "silently_track", falsePositiveRisk: "high", notes: ["17-char alphanumerics also appear in other IDs — pair with VIN context keywords."] }),
+  /* UK PII batch (gb-postcode, gb-mobile, gb-dob) — ported verbatim from uk-pii-detectors.ts */
+  ...ukPiiRegexDetectors,
+];
+
+/* ---------------- Phase 1 expansion: UK, EU core, US (regex detectors) ---------------- */
+/* ============================================================
+   AEDLP Policy Creator — library expansion, Phase 1 (UK, EU core, US)
+   Example / starting-point detectors. Safe example values only, no real PII.
+
+   IMPORTANT, read before shipping:
+   - These are FORMAT-ONLY patterns for the in-browser tester. The browser
+     RegExp is not the AEDLP engine. There is no Luhn check on cards and no
+     checksum validation on national IDs (NHS mod-11, NL BSN 11-test, Italian
+     Codice Fiscale, NPI/Luhn, DEA, MBI, ISIN, etc.). AEDLP validates those.
+     Each detector says so in notes and carries a falsePositiveRisk.
+   - Confirm every pattern in the AEDLP Custom Policy Tester before use.
+   - Do not duplicate detectors that already exist in the library
+     (gb driving licence, NINO, passport, NHS, IBAN, electoral roll; US SSN,
+     passport, ITIN, EIN, bank account, ABA routing, phone; FR NIR, DE Steuer-ID,
+     ES DNI/NIF, IE PPS; generic credit-card PAN, IBAN, SWIFT/BIC).
+
+   Field shape matches the handoff data.js regex detectors exactly:
+   id, displayName, aliases, description, country, regionLabel, category, regex,
+   contextKeywords, positiveExamples, negativeExamples, recommendedAction,
+   falsePositiveRisk, notes. conditionType is "regular_expression".
+   ============================================================ */
+
+export const phase1Detectors: RegexDetector[] = [
+  /* ---------------- Payment card data (PCI), per brand ---------------- */
+  /* Card data is region-neutral but central to US, UK and EU finance/retail.
+     Format only, no Luhn. Optional single consistent separator via backref. */
+  { id: "cc-visa", displayName: "Visa Card Number", conditionType: "regular_expression",
+    aliases: ["visa", "visa card", "visa pan"],
+    description: "Visa primary account number (16-digit), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b4\\d{3}([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["visa", "card number", "credit card", "PAN", "payment card"],
+    positiveExamples: ["4111 1111 1111 1111", "Card: 4111111111111111"],
+    negativeExamples: ["Reference 4111 11 11", "Order 1234 5678 9012 3456"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. AEDLP applies Luhn. 13-digit legacy Visa is not matched."] },
+
+  { id: "cc-mastercard", displayName: "Mastercard Number", conditionType: "regular_expression",
+    aliases: ["mastercard", "mc card", "mastercard pan"],
+    description: "Mastercard PAN including 2-series (2221-2720), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b(?:5[1-5]\\d{2}|222[1-9]|22[3-9]\\d|2[3-6]\\d{2}|27[01]\\d|2720)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["mastercard", "card number", "credit card", "PAN", "payment card"],
+    positiveExamples: ["5500 0000 0000 0004", "2221 0000 0000 0009"],
+    negativeExamples: ["Account 5000 1234 5678 9010"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Covers legacy 51-55 and 2-series 2221-2720 BINs."] },
+
+  { id: "cc-amex", displayName: "American Express Number", conditionType: "regular_expression",
+    aliases: ["amex", "american express", "amex card"],
+    description: "American Express 15-digit PAN (4-6-5), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b3[47]\\d{2}([ -]?)\\d{6}\\1\\d{5}\\b",
+    contextKeywords: ["amex", "american express", "card number", "credit card", "PAN"],
+    positiveExamples: ["3782 822463 10005", "378282246310005"],
+    negativeExamples: ["Ref 3700 0000 0000 002"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Amex is 15 digits in 4-6-5 grouping."] },
+
+  { id: "cc-discover", displayName: "Discover Card Number", conditionType: "regular_expression",
+    aliases: ["discover", "discover card"],
+    description: "Discover 16-digit PAN (6011, 65, 644-649, 622), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b6(?:011|5\\d{2}|4[4-9]\\d|22[12]\\d)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["discover", "card number", "credit card", "PAN"],
+    positiveExamples: ["6011 1111 1111 1117", "6011111111111117"],
+    negativeExamples: ["Code 6000 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Discover BIN ranges are broad; confirm in AEDLP."] },
+
+  { id: "cc-diners", displayName: "Diners Club Number", conditionType: "regular_expression",
+    aliases: ["diners", "diners club"],
+    description: "Diners Club 14-digit PAN (300-305, 36, 38-39), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b3(?:0[0-5]|[68]\\d)\\d([ -]?)\\d{6}\\1\\d{4}\\b",
+    contextKeywords: ["diners", "diners club", "card number", "credit card", "PAN"],
+    positiveExamples: ["3056 930902 5904", "30569309025904"],
+    negativeExamples: ["Ref 3700 000000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. Diners is 14 digits."] },
+
+  { id: "cc-jcb", displayName: "JCB Card Number", conditionType: "regular_expression",
+    aliases: ["jcb", "jcb card"],
+    description: "JCB 16-digit PAN (3528-3589), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b35(?:2[89]|[3-8]\\d)([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["jcb", "card number", "credit card", "PAN"],
+    positiveExamples: ["3530 1113 3330 0000", "3530111333300000"],
+    negativeExamples: ["Code 3500 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. JCB BINs 3528-3589."] },
+
+  { id: "cc-unionpay", displayName: "UnionPay Card Number", conditionType: "regular_expression",
+    aliases: ["unionpay", "union pay", "cup card"],
+    description: "UnionPay 16-digit PAN (BIN 62), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b62\\d{2}([ -]?)\\d{4}\\1\\d{4}\\1\\d{4}\\b",
+    contextKeywords: ["unionpay", "union pay", "card number", "credit card", "PAN"],
+    positiveExamples: ["6212 3456 7890 0000", "6212345678900000"],
+    negativeExamples: ["Ref 6300 0000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Format only, no Luhn check. UnionPay can be 16-19 digits; this matches 16."] },
+
+  { id: "cc-maestro", displayName: "Maestro Card Number", conditionType: "regular_expression",
+    aliases: ["maestro", "maestro card"],
+    description: "Maestro PAN (variable 12-19 digits), format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Payment card data (PCI)",
+    regex: "\\b(?:5018|5020|5038|5893|6304|6759|676[1-3])\\d{8,15}\\b",
+    contextKeywords: ["maestro", "card number", "debit card", "PAN"],
+    positiveExamples: ["6759649826438453", "6304000000000000"],
+    negativeExamples: ["Ref 5000 0000 0000"],
+    recommendedAction: "block", falsePositiveRisk: "high",
+    notes: ["Format only, no Luhn check. Variable length makes this high false-positive; pair with context."] },
+
+  /* ---------------- United Kingdom ---------------- */
+  { id: "gb-utr", displayName: "UK Unique Taxpayer Reference (UTR)", conditionType: "regular_expression",
+    aliases: ["utr", "unique taxpayer reference", "self assessment number", "hmrc utr"],
+    description: "HMRC 10-digit Unique Taxpayer Reference, format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Government ID",
+    regex: "\\b\\d{5}\\s?\\d{5}\\b",
+    contextKeywords: ["UTR", "unique taxpayer reference", "self assessment", "HMRC", "tax reference"],
+    positiveExamples: ["UTR: 1234567890", "Self assessment 12345 67890"],
+    negativeExamples: ["Order 1234", "Phone 0123 456"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Bare 10-digit shape, very broad. Always pair with UTR context keywords."] },
+
+  { id: "gb-sort-code", displayName: "UK Bank Sort Code", conditionType: "regular_expression",
+    aliases: ["sort code", "uk sort code", "bank sort code"],
+    description: "UK 6-digit bank sort code (XX-XX-XX), format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\b\\d{2}[- ]?\\d{2}[- ]?\\d{2}\\b",
+    contextKeywords: ["sort code", "sort-code", "bank account", "account number"],
+    positiveExamples: ["Sort code: 12-34-56", "12 34 56"],
+    negativeExamples: ["Date 01 02 03"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Six digits is very broad; pair with sort code context and usually a UK account number nearby."] },
+
+  { id: "gb-vat", displayName: "UK VAT Registration Number", conditionType: "regular_expression",
+    aliases: ["uk vat", "vat number", "vat registration", "gb vat"],
+    description: "UK VAT registration number (standard, GD or HA forms), format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\bGB\\s?(?:\\d{3}\\s?\\d{4}\\s?\\d{2}(?:\\s?\\d{3})?|GD\\d{3}|HA\\d{3})\\b",
+    contextKeywords: ["VAT", "VAT number", "VAT registration", "GB VAT"],
+    positiveExamples: ["GB123456789", "VAT: GB 123 4567 89", "GBGD001"],
+    negativeExamples: ["GB12345", "Reference GBABC"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Covers 9-digit, 12-digit branch, and government/health body GD/HA forms."] },
+
+  { id: "gb-sedol", displayName: "UK SEDOL (Security Identifier)", conditionType: "regular_expression",
+    aliases: ["sedol", "stock exchange daily official list"],
+    description: "London SEDOL 7-character security identifier, format only.",
+    country: "GB", regionLabel: "United Kingdom", category: "Financial data",
+    regex: "\\b[B-DF-HJ-NP-TV-XYZ0-9]{6}\\d\\b",
+    contextKeywords: ["SEDOL", "security identifier", "instrument", "holdings"],
+    positiveExamples: ["SEDOL B0YBKL9", "0263494"],
+    negativeExamples: ["Code ABCDEFG"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Consonant-and-digit shape; check digit not validated. Pair with SEDOL context."] },
+
+  /* ---------------- European Union (core) ---------------- */
+  { id: "it-codice-fiscale", displayName: "Italian Codice Fiscale", conditionType: "regular_expression",
+    aliases: ["codice fiscale", "italian tax code", "italy fiscal code"],
+    description: "Italian Codice Fiscale 16-character personal tax code, format only.",
+    country: "IT", regionLabel: "Italy", category: "Government ID",
+    regex: "\\b[A-Za-z]{6}\\d{2}[A-EHLMPR-Ta-ehlmpr-t]\\d{2}[A-Za-z]\\d{3}[A-Za-z]\\b",
+    contextKeywords: ["codice fiscale", "tax code", "fiscal code", "CF"],
+    positiveExamples: ["RSSMRA85T10A562S", "Codice Fiscale: VRDLGI99B12F205X"],
+    negativeExamples: ["Reference ABCDEF12345"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Strong structural shape; the trailing control character is not checksum-validated here."] },
+
+  { id: "nl-bsn", displayName: "Netherlands BSN (Citizen Number)", conditionType: "regular_expression",
+    aliases: ["bsn", "burgerservicenummer", "dutch citizen number", "netherlands bsn"],
+    description: "Netherlands Burgerservicenummer, 8-9 digits, format only.",
+    country: "NL", regionLabel: "Netherlands", category: "Government ID",
+    regex: "\\b\\d{9}\\b",
+    contextKeywords: ["BSN", "burgerservicenummer", "citizen number", "sofinummer"],
+    positiveExamples: ["BSN: 111222333", "Burgerservicenummer 123456782"],
+    negativeExamples: ["Order 12345678", "Phone 0612345678"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["Bare 9-digit shape with an 11-test checksum that is not validated here; always pair with BSN context."] },
+
+  { id: "es-nie", displayName: "Spanish NIE (Foreigner ID)", conditionType: "regular_expression",
+    aliases: ["nie", "numero de identidad de extranjero", "spanish foreigner id"],
+    description: "Spanish NIE foreigner identity number (X/Y/Z + 7 digits + letter), format only.",
+    country: "ES", regionLabel: "Spain", category: "Government ID",
+    regex: "\\b[XYZxyz]\\d{7}[A-Za-z]\\b",
+    contextKeywords: ["NIE", "numero de identidad", "foreigner", "extranjero"],
+    positiveExamples: ["NIE: X1234567L", "Y7654321Z"],
+    negativeExamples: ["DNI 12345678Z"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["Control letter not checksum-validated. Complements the existing DNI/NIF detector."] },
+
+  { id: "eu-vat", displayName: "EU VAT Number (multi-country)", conditionType: "regular_expression",
+    aliases: ["eu vat", "vat number", "vat identification number", "ust-idnr", "tva"],
+    description: "EU VAT identification number across member states, format only.",
+    country: "EU", regionLabel: "European Union", category: "Financial data",
+    regex: "\\b(?:ATU\\d{8}|BE0?\\d{9,10}|BG\\d{9,10}|HR\\d{11}|CY\\d{8}[A-Z]|CZ\\d{8,10}|DE\\d{9}|DK\\d{8}|EE\\d{9}|EL\\d{9}|ES[A-Z0-9]\\d{7}[A-Z0-9]|FI\\d{8}|FR[A-Z0-9]{2}\\d{9}|HU\\d{8}|IE\\d{7}[A-Z]{1,2}|IT\\d{11}|LT(?:\\d{9}|\\d{12})|LU\\d{8}|LV\\d{11}|MT\\d{8}|NL\\d{9}B\\d{2}|PL\\d{10}|PT\\d{9}|RO\\d{2,10}|SE\\d{12}|SI\\d{8}|SK\\d{10})\\b",
+    contextKeywords: ["VAT", "VAT number", "USt-IdNr", "TVA", "partita IVA", "BTW"],
+    positiveExamples: ["DE123456789", "FRXX999999999", "IT12345678901", "NL123456789B01"],
+    negativeExamples: ["VAT 12345", "Code ZZ999"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Broad alternation across member states; per-country check digits are not validated."] },
+
+  { id: "isin", displayName: "ISIN (Securities Identifier)", conditionType: "regular_expression",
+    aliases: ["isin", "international securities identification number"],
+    description: "ISIN 12-character security identifier, format only.",
+    country: "EU", regionLabel: "European Union", category: "Financial data",
+    regex: "\\b[A-Z]{2}[A-Z0-9]{9}\\d\\b",
+    contextKeywords: ["ISIN", "security identifier", "instrument", "holdings", "portfolio"],
+    positiveExamples: ["US0378331005", "GB0002634946", "ISIN DE000BAY0017"],
+    negativeExamples: ["Code 12ABC", "Ref USABC"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Two-letter country prefix plus 9 alphanumerics plus a check digit, not Luhn-validated here."] },
+
+  /* ---------------- United States ---------------- */
+  { id: "us-drivers-license", displayName: "US Driver's License (common state shapes)", conditionType: "regular_expression",
+    aliases: ["us drivers license", "driver license", "dl number", "drivers licence"],
+    description: "US driver's license matching several common state formats, format only.",
+    country: "US", regionLabel: "United States", category: "Government ID",
+    regex: "\\b(?:[A-Z]\\d{7}|[A-Z]\\d{12}|\\d{8,9}|[A-Z]\\d{11,12})\\b",
+    contextKeywords: ["driver license", "driver's license", "DL", "DL number", "license number"],
+    positiveExamples: ["DL: D1234567", "License number 123456789"],
+    negativeExamples: ["Order 12345", "Code ABC123"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["State formats vary widely; this matches several common shapes and will over-match. Pair with context and confirm the specific state in AEDLP."] },
+
+  { id: "us-npi", displayName: "US National Provider Identifier (NPI)", conditionType: "regular_expression",
+    aliases: ["npi", "national provider identifier", "provider number"],
+    description: "US healthcare NPI, 10 digits beginning 1 or 2, format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[12]\\d{9}\\b",
+    contextKeywords: ["NPI", "national provider identifier", "provider", "rendering provider"],
+    positiveExamples: ["NPI: 1234567893", "Provider 2123456789"],
+    negativeExamples: ["Phone 5551234567", "Account 9123456789"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["10-digit shape with a Luhn check that is not validated here; pair with NPI context."] },
+
+  { id: "us-dea-number", displayName: "US DEA Registration Number", conditionType: "regular_expression",
+    aliases: ["dea number", "dea registration", "prescriber dea"],
+    description: "US DEA registration number (2 letters + 7 digits), format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[ABFGMPRXabfgmprx][A-Za-z9]\\d{7}\\b",
+    contextKeywords: ["DEA", "DEA number", "DEA registration", "prescriber"],
+    positiveExamples: ["DEA: AB1234563", "FX9876543"],
+    negativeExamples: ["Ref ZZ1234567"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Registrant-type first letter plus 7 digits; the check digit is not validated here."] },
+
+  { id: "us-medicare-mbi", displayName: "US Medicare Beneficiary Identifier (MBI)", conditionType: "regular_expression",
+    aliases: ["mbi", "medicare beneficiary identifier", "medicare number"],
+    description: "US Medicare MBI, 11 characters in the CMS format, format only.",
+    country: "US", regionLabel: "United States", category: "Health data (PHI)",
+    regex: "\\b[1-9][ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy][0-9ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]\\d[ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy][0-9ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]\\d[ACEFGHJ-NPRTUVWXYacefghj-nprtuvwxy]{2}\\d{2}\\b",
+    contextKeywords: ["MBI", "medicare", "beneficiary", "medicare number"],
+    positiveExamples: ["MBI: 1EG4TE5MK73", "1EG4TE5MK73"],
+    negativeExamples: ["SSN 123-45-6789", "Code 1234567890A"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["CMS MBI excludes the letters S, L, O, I, B and Z to avoid digit confusion. Dashes are sometimes shown; this matches the undashed form."] },
+
+  { id: "us-cusip", displayName: "US CUSIP (Securities Identifier)", conditionType: "regular_expression",
+    aliases: ["cusip", "security identifier"],
+    description: "US CUSIP 9-character security identifier, format only.",
+    country: "US", regionLabel: "United States", category: "Financial data",
+    regex: "\\b[0-9A-Za-z]{3}[0-9A-Za-z]{5}\\d\\b",
+    contextKeywords: ["CUSIP", "security identifier", "instrument", "holdings", "portfolio"],
+    positiveExamples: ["037833100", "CUSIP 38259P508"],
+    negativeExamples: ["Code 12AB", "Ref ABCDEFGHIJ"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Nine-character issuer-plus-issue-plus-check shape; check digit not validated here. Pair with CUSIP context."] },
+];
+
+/* ---------------- Phase 2 expansion: Aerospace, Defence & Export Control ---------------- */
+/* ============================================================
+   AEDLP Policy Creator — library expansion, Phase 2
+   Aerospace, Defence and Export Control. Example detectors only.
+
+   What these are: detectors for the PUBLIC markings and identifiers that
+   organisations stamp on controlled material (ITAR/EAR/CUI banners,
+   DoD distribution statements, ECCN classification labels, CAGE and NATO
+   stock identifiers, UK export-control terms). They flag the labels, not any
+   controlled technical content. No controlled data is contained here.
+
+   IMPORTANT, same standing rules as Phase 1:
+   - Format-only patterns for the in-browser tester. Browser RegExp is not the
+     AEDLP engine. CAGE, NSN, ECCN have no checksum or list-membership check
+     here; AEDLP validates against the real lists. Confirm in the AEDLP tester.
+   - falsePositiveRisk is set honestly; the structural-ID regexes are broad.
+   - Field shapes match the handoff helpers exactly:
+       rx  -> regular_expression: id, displayName, aliases, description, country,
+              regionLabel, category, regex, contextKeywords, positiveExamples,
+              negativeExamples, recommendedAction, falsePositiveRisk, notes
+       kw  -> keyword: ...as rx but keywords[] instead of regex; matchMode
+              { caseInsensitive:true, wholeWord:true }; optional industry
+       kp  -> keyword_pattern: ...groups[[...],[...]], operator, proximity;
+              matchMode { caseInsensitive:true, wholeWord:true }; optional industry
+   - Several carry industry "Aerospace & defense". The wire-in PR must add that
+     industry to the taxonomy so the filter shows it.
+   ============================================================ */
+
+/* ---------------- structural identifiers (regex) ---------------- */
+export const phase2Regex: RegexDetector[] = [
+  { id: "us-cage-code", displayName: "CAGE / NCAGE Code", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["cage code", "ncage", "commercial and government entity code", "supplier code"],
+    description: "5-character Commercial and Government Entity (CAGE) code, format only.",
+    country: "US", regionLabel: "United States", category: "Government ID",
+    regex: "\\b\\d[A-HJ-NP-Z0-9]{3}\\d\\b",
+    contextKeywords: ["CAGE", "CAGE code", "NCAGE", "commercial and government entity", "supplier code"],
+    positiveExamples: ["CAGE code 1ABC2", "Supplier CAGE: 81205"],
+    negativeExamples: ["Reference ABCDE", "Lot AB12"],
+    recommendedAction: "warn", falsePositiveRisk: "high",
+    notes: ["First and last characters are digits, middle three are alphanumeric excluding I and O. Broad; pair with CAGE context. Membership in the real CAGE registry is not checked here."] },
+
+  { id: "nato-stock-number", displayName: "NATO Stock Number (NSN)", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["nsn", "nato stock number", "national stock number"],
+    description: "13-digit NATO Stock Number in 4-2-3-4 grouping, format only.",
+    country: "GLOBAL", regionLabel: "Global", category: "Government ID",
+    regex: "\\b\\d{4}-\\d{2}-\\d{3}-\\d{4}\\b",
+    contextKeywords: ["NSN", "NATO stock number", "national stock number", "stock number"],
+    positiveExamples: ["NSN 5340-01-234-5678", "Part NSN: 1005-00-123-4567"],
+    negativeExamples: ["Order 5340-01-234", "Date 2024-01-23"],
+    recommendedAction: "warn", falsePositiveRisk: "low",
+    notes: ["The dashed 4-2-3-4 shape is distinctive; undashed 13-digit NSNs are not matched here."] },
+
+  { id: "eccn-classification", displayName: "ECCN Classification Number", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["eccn", "export control classification number", "commerce control list"],
+    description: "Export Control Classification Number (e.g. 3A001), format only.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    regex: "\\b[0-9][A-E]\\d{3}\\b",
+    contextKeywords: ["ECCN", "export control classification", "commerce control list", "CCL", "dual-use"],
+    positiveExamples: ["ECCN 3A001 applies", "Classified 5A002 under the CCL"],
+    negativeExamples: ["Room 3A", "Model A1234"],
+    recommendedAction: "warn", falsePositiveRisk: "medium",
+    notes: ["Category digit plus product group letter (A-E) plus three digits. Suffixes like .a.1 are not matched. Confirm against the live CCL in AEDLP."] },
+
+  { id: "dod-distribution-statement", displayName: "DoD Distribution Statement", conditionType: "regular_expression",
+    industry: "Aerospace & defense",
+    aliases: ["distribution statement", "distribution a", "distribution statement b", "dod marking"],
+    description: "US DoD distribution statement marking (A through F), format only.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    regex: "\\bDISTRIBUTION\\s+STATEMENT\\s+[A-F]\\b",
+    contextKeywords: ["distribution statement", "further dissemination", "DoD", "controlled"],
+    positiveExamples: ["DISTRIBUTION STATEMENT C: U.S. Government agencies only.", "Marked DISTRIBUTION STATEMENT D"],
+    negativeExamples: ["Distribution list attached.", "Statement of work follows."],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: ["Matches the banner A-F. Statements B-F indicate restricted dissemination."] },
+];
+
+/* ---------------- export-control marking terms (keyword) ---------------- */
+export const phase2Keywords: KeywordDetector[] = [
+  { id: "kw-itar-controlled", displayName: "ITAR — Controlled Material Markings", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["itar", "itar controlled", "usml", "munitions list", "defense article"],
+    description: "International Traffic in Arms Regulations marking and reference terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["ITAR", "ITAR controlled", "ITAR-controlled", "International Traffic in Arms", "USML", "United States Munitions List", "defense article", "defense service", "22 CFR 120", "22 CFR 121"],
+    positiveExamples: ["This drawing is ITAR controlled and listed under USML Category VIII."],
+    negativeExamples: ["The marketing brochure is cleared for public release."],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: ["Whole-word matching so 'itar' substrings do not over-trigger. ITAR data warrants strict handling."] },
+
+  { id: "kw-ear-export", displayName: "EAR — Export Administration Markings", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["ear", "ear99", "dual-use", "commerce control list", "deemed export"],
+    description: "Export Administration Regulations marking and reference terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["EAR", "EAR99", "Export Administration Regulations", "dual-use", "Commerce Control List", "CCL", "15 CFR", "deemed export", "export controlled"],
+    positiveExamples: ["Classified EAR99; deemed export rules apply to foreign nationals."],
+    negativeExamples: ["The annual report is publicly filed."],
+    recommendedAction: "warn_require_justification", falsePositiveRisk: "medium",
+    notes: ["'EAR' is short; whole-word matching reduces noise. Pair with export context where possible."] },
+
+  { id: "kw-cui-markings", displayName: "CUI — Controlled Unclassified Information", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["cui", "controlled unclassified information", "noforn", "fouo"],
+    description: "US CUI banner and dissemination control terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    keywords: ["CUI", "CONTROLLED UNCLASSIFIED INFORMATION", "Controlled Unclassified Information", "CUI//SP-", "NOFORN", "FED ONLY", "FEDCON", "For Official Use Only", "FOUO"],
+    positiveExamples: ["CUI//SP-CTI: Controlled Unclassified Information, NOFORN."],
+    negativeExamples: ["This newsletter is for general distribution."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Overlaps general classification markings; this set is defence and CUI specific."] },
+
+  { id: "kw-uk-export-control", displayName: "UK Strategic Export Control Terms", conditionType: "keyword",
+    industry: "Aerospace & defense", contextKeywords: [],
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["ogel", "siel", "spire", "export licence", "ecju", "strategic export"],
+    description: "UK strategic export control licence and process terms.",
+    country: "GB", regionLabel: "United Kingdom", category: "Confidential business data",
+    keywords: ["OGEL", "SIEL", "SPIRE", "export licence", "ECJU", "strategic export", "controlled goods", "dual-use", "end-user undertaking"],
+    positiveExamples: ["These goods require a SIEL; submit via SPIRE to the ECJU."],
+    negativeExamples: ["The travel policy has been updated."],
+    recommendedAction: "warn_require_justification", falsePositiveRisk: "low",
+    notes: ["UK regime terms (ECJU, SPIRE, OGEL, SIEL). Complements the US ITAR and EAR sets."] },
+];
+
+/* ---------------- proximity patterns (keyword_pattern) ---------------- */
+export const phase2KeywordPatterns: KeywordPatternDetector[] = [
+  { id: "kp-export-controlled-technical-data", displayName: "Export-Controlled Technical Data", conditionType: "keyword_pattern",
+    industry: "Aerospace & defense",
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["controlled technical data", "tdp leak", "itar drawing", "export controlled drawing"],
+    description: "Technical-data terms occurring close to export-control terms.",
+    country: "GLOBAL", regionLabel: "Global", category: "Confidential business data",
+    groups: [["technical data", "drawing", "specification", "schematic", "source code", "blueprint", "technical data package", "TDP"], ["ITAR", "EAR", "EAR99", "ECCN", "export controlled", "USML", "controlled", "dual-use"]],
+    operator: "AND", proximity: 15,
+    positiveExamples: ["The attached technical data package is ITAR controlled."],
+    negativeExamples: ["The drawing competition winners are announced.", "Our export sales grew this quarter."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Both a technical-data term and a control term must appear within the proximity window, which cuts unrelated single-word hits."] },
+
+  { id: "kp-classified-program-leak", displayName: "Classified Defence Programme Indicators", conditionType: "keyword_pattern",
+    industry: "Aerospace & defense",
+    matchMode: { caseInsensitive: true, wholeWord: true },
+    aliases: ["classified program", "defense contract leak", "program classification"],
+    description: "Programme or contract terms occurring close to classification terms.",
+    country: "US", regionLabel: "United States", category: "Confidential business data",
+    groups: [["program", "programme", "contract", "milestone", "deliverable", "proposal"], ["SECRET", "TOP SECRET", "classified", "NOFORN", "CUI", "SAP", "special access"]],
+    operator: "AND", proximity: 12,
+    positiveExamples: ["The program deliverable is classified SECRET, NOFORN."],
+    negativeExamples: ["The training program is open to all staff.", "The contract was signed publicly."],
+    recommendedAction: "block", falsePositiveRisk: "medium",
+    notes: ["Proximity reduces matches where a benign 'program' sits far from a classification term."] },
+];
+
+export const phase2Detectors = [
+  ...phase2Regex,
+  ...phase2Keywords,
+  ...phase2KeywordPatterns,
 ];
 
 /* ---------------- keyword sets (industry term lists) ---------------- */
@@ -416,7 +857,9 @@ const keywordPatterns = [
     operator: "AND", proximity: 12,
     positiveExamples: ["Full CRM export attached as a spreadsheet — the entire customer list."],
     negativeExamples: ["Let's schedule the customer onboarding call."],
-    recommendedAction: "warn", falsePositiveRisk: "medium", notes: ["Combine with attachment scanning for strongest coverage."] })
+    recommendedAction: "warn", falsePositiveRisk: "medium", notes: ["Combine with attachment scanning for strongest coverage."] }),
+  /* UK PII batch (kp-gb-identity-bundle, kp-gb-special-category) — ported verbatim from uk-pii-detectors.ts */
+  ...ukPiiKeywordPatternDetectors,
 ];
 
 /* ---------------- industry keyword sets ---------------- */
@@ -438,6 +881,57 @@ const rcp = (o: RcpInput): RecipientDomainDetector => ({
   matchMode: { caseInsensitive: true, wholeWord: true },
   ...o,
 });
+/* Industry competitor / peer domain packs (batch 1).
+   INDUSTRY starting lists of the major players in a sector — not customer
+   specific. Intended flow: suggest -> review -> curate -> add; never drop one
+   straight into a live blocking policy. Before deploying, the user removes
+   their own organisation's domains and adds the rivals that matter to that
+   customer. This is recipient-domain matching, so it flags mail SENT TO these
+   domains. These are real, primary corporate domains (not .example) by design;
+   the placeholder rcp-competitors below keeps the reserved .example "build your
+   own" generic. Rebranded / abbreviated domains (rtx.com, gd.com, gs.com,
+   db.com, sc.com) were verified against the companies' own sites; the mandatory
+   curate step is the backstop for any that have since changed. Domain lists are
+   the vetted source of truth — do not alter them. */
+export const competitorPacks: RecipientDomainDetector[] = [
+  rcp({ id: "rcp-competitors-aerospace", displayName: "Competitor Domains — Aerospace & Defence",
+    aliases: ["aerospace competitors", "defence competitors", "defense primes", "a&d rivals"],
+    description: "Recipient address on a major aerospace or defence company domain. Industry starting list, curate before use.",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Aerospace & defense", industries: ["Aerospace & defense"],
+    domains: [
+      "boeing.com", "airbus.com", "lockheedmartin.com", "rtx.com", "northropgrumman.com",
+      "gd.com", "gdit.com", "baesystems.com", "leonardo.com", "thalesgroup.com",
+      "saab.com", "rolls-royce.com", "safran-group.com", "l3harris.com", "leidos.com",
+      "geaerospace.com", "embraer.com", "dassault-aviation.com", "bombardier.com",
+      "rheinmetall.com", "elbitsystems.com", "collinsaerospace.com", "prattwhitney.com",
+      "honeywell.com", "textron.com"
+    ],
+    positiveExamples: ["Sending the design package to buyer@boeing.com", "Forwarded the proposal to contact@airbus.com"],
+    negativeExamples: ["Send to client@our-supplier.com"],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: [
+      "Industry starting list. Remove your own organisation and add the specific rivals that matter to the customer before deploying.",
+      "Primary corporate domains only; large primes use many subsidiary and country domains not all listed here."
+    ] }),
+  rcp({ id: "rcp-competitors-financial", displayName: "Competitor Domains — Financial Services",
+    aliases: ["bank competitors", "financial services rivals", "fs competitors", "investment bank domains"],
+    description: "Recipient address on a major bank or asset manager domain. Industry starting list, curate before use.",
+    country: "GLOBAL", regionLabel: "Global", category: "Recipients & destinations", industry: "Financial services", industries: ["Financial services"],
+    domains: [
+      "jpmorgan.com", "jpmorganchase.com", "chase.com", "bankofamerica.com", "citi.com",
+      "wellsfargo.com", "gs.com", "morganstanley.com", "hsbc.com", "barclays.com",
+      "lloydsbanking.com", "natwest.com", "santander.com", "db.com", "bnpparibas.com",
+      "ubs.com", "sc.com", "socgen.com", "credit-agricole.com", "blackrock.com",
+      "schroders.com", "schwab.com"
+    ],
+    positiveExamples: ["Sending the deck to analyst@gs.com", "Replied to banker@jpmorgan.com"],
+    negativeExamples: ["Send to client@portfolio-partner.com"],
+    recommendedAction: "block", falsePositiveRisk: "low",
+    notes: [
+      "Industry starting list. Remove your own organisation and add the specific rivals that matter to the customer before deploying.",
+      "Banks use many brand, retail and country domains (for example .co.uk and regional variants) not all listed here; confirm coverage for the customer."
+    ] }),
+];
 const recipientDetectors = [
   rcp({ id: "rcp-freemail", displayName: "Personal Webmail / Freemail Domains",
     aliases: ["freemail", "personal email", "webmail", "gmail", "yahoo", "hotmail", "outlook.com", "personal account", "consumer email"],
@@ -465,7 +959,8 @@ const recipientDetectors = [
     positiveExamples: ["Sending the roadmap to contact@globex-industries.example"],
     negativeExamples: ["Send to client@trusted-partner.com"],
     recommendedAction: "block", falsePositiveRisk: "low",
-    notes: ["Placeholder domains use the reserved .example TLD \u2014 swap in your live competitor list before deploying."] })
+    notes: ["Placeholder domains use the reserved .example TLD \u2014 swap in your live competitor list before deploying."] }),
+  ...competitorPacks,
 ];
 
 /* ---------------- file type / extension detectors ---------------- */
@@ -639,9 +1134,13 @@ const fileExtensionDetectors = [
 
 const detectors: Detector[] = [
   ...regexDetectors,
+  ...phase1Detectors,
+  ...phase2Regex,
   ...keywordDetectors,
   ...transportDetectors,
+  ...phase2Keywords,
   ...keywordPatterns,
+  ...phase2KeywordPatterns,
   ...recipientDetectors,
   ...fileExtensionDetectors,
 ];
@@ -665,8 +1164,8 @@ const categories = [
 const industries = [
   "Cross-industry", "Financial services", "Insurance", "Healthcare & life sciences",
   "Technology & SaaS", "Legal & professional services", "Manufacturing & engineering",
-  "Transportation & logistics", "Retail & e-commerce", "Energy & utilities",
-  "Public sector", "Education"
+  "Aerospace & defense", "Transportation & logistics", "Retail & e-commerce",
+  "Energy & utilities", "Public sector", "Education"
 ];
 const catIndustry: Record<string, string[]> = {
   "Government ID": ["Cross-industry", "Public sector"],
@@ -691,6 +1190,7 @@ const industryAlias: Record<string, string[]> = {
   "Mergers & acquisitions": ["Financial services", "Legal & professional services"],
   "Human resources": ["Cross-industry"],
   "Manufacturing & engineering": ["Manufacturing & engineering"],
+  "Aerospace & defense": ["Aerospace & defense"],
   "Public sector": ["Public sector"],
   "Data protection": ["Cross-industry"],
   "Cross-industry": ["Cross-industry"],
@@ -714,7 +1214,7 @@ detectors.forEach((d) => {
   d.industries = [...set];
 });
 const regions = ["Global", "United Kingdom", "United States", "France", "Germany", "Spain",
-  "Ireland", "Canada", "Australia", "European Union"];
+  "Italy", "Netherlands", "Ireland", "Canada", "Australia", "European Union"];
 
 const actions: Record<RecommendedAction, { label: string; desc: string; rank: number }> = {
   silently_track: { label: "Silently track", desc: "Log the event only; no end-user warning.", rank: 1 },

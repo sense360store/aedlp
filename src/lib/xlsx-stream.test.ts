@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { zipSync, strToU8 } from "fflate";
-import { pickSheet, TARGET_SHEET, type ParsedResult } from "./extract";
+import { pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
 import { readSheetNamesStream, parseWorkbookStream } from "./xlsx-stream";
 import { parseWorkbookLegacy, readSheetNamesLegacy } from "./extract-legacy";
 
@@ -124,6 +124,12 @@ describe("parseWorkbookStream on the sample enforcer export", () => {
     expect(seen[seen.length - 1]).toBe(1);
     expect(Math.min(...seen)).toBeGreaterThanOrEqual(0);
     expect(Math.max(...seen)).toBeLessThanOrEqual(1);
+  });
+
+  it("reduces to the wizard's trusted-domain default (external contacts only)", async () => {
+    const res = await parseWorkbookStream(fileFromSample(), "unauthorised_contacts");
+    // soteria365.com is the lone external contact; gmail/hotmail are freemail.
+    expect(trustedDomainsFromParsed(res)).toEqual(["soteria365.com"]);
   });
 });
 
