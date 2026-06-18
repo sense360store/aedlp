@@ -1,5 +1,4 @@
 # AEDLP Policy Creator
-
 A static, client side tool that helps you assemble an Adaptive Email DLP (AEDLP) custom policy from a
 library of detectors, tune it, test it against sample text in the browser, and copy the values into the
 AEDLP Architect Custom Policy editor by hand. A second page extracts a trusted domain whitelist from an
