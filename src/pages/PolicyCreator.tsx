@@ -14,6 +14,7 @@ import { buildEffectiveRegex } from "../lib/regex";
 import { loadTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
 import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
+import { FEATURE_COMPETITOR_FINDER, FEATURE_TEST_PANEL } from "../lib/features";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
 import {
   PolicyDraft,
@@ -214,8 +215,8 @@ export default function PolicyCreator() {
             total={base.length}
             addedIds={addedIds}
             onToggle={onToggle}
-            onTest={onTest}
-            onAddCompetitors={onAddCompetitors}
+            onTest={FEATURE_TEST_PANEL ? onTest : undefined}
+            onAddCompetitors={FEATURE_COMPETITOR_FINDER ? onAddCompetitors : undefined}
           />
         </div>
 
@@ -235,15 +236,19 @@ export default function PolicyCreator() {
             onUseTrusted={onUseTrusted}
             onRefreshTrusted={onRefreshTrusted}
           />
-          <div id="test-anchor"></div>
-          <TestPanel
-            conditions={added}
-            operator={operator}
-            sample={sample}
-            setSample={setSample}
-            focus={focus}
-            clearFocus={() => setFocus(null)}
-          />
+          {FEATURE_TEST_PANEL && (
+            <>
+              <div id="test-anchor"></div>
+              <TestPanel
+                conditions={added}
+                operator={operator}
+                sample={sample}
+                setSample={setSample}
+                focus={focus}
+                clearFocus={() => setFocus(null)}
+              />
+            </>
+          )}
         </div>
       </main>
     </div>

@@ -28,7 +28,8 @@ Browse the detector library (regular expressions, keyword sets, keyword patterns
 and file types), add detectors to a policy draft, and combine them with ALL or ANY logic. The draft
 suggests a name, description, tags, and action automatically and lets you override any field. The test
 panel runs each condition against sample text and shows whether the policy would trigger. Copy each
-field, or the whole policy, and paste it into the AEDLP Architect Custom Policy editor.
+field, or the whole policy, and paste it into the AEDLP Architect Custom Policy editor. (The test
+panel is currently hidden behind a feature flag, defaulted off — see "Feature flags" below.)
 
 ### Trusted Domain Extractor (`/trusted-domain-extractor`)
 
@@ -49,7 +50,21 @@ name first.)
 
 Only the company name and industry you type are sent to the lookup service. Uploaded files and the
 extractor stay in your browser and are never sent. This panel is the single exception to "no backend"
-below.
+below. (The Find-competitors entry point is currently hidden behind a feature flag, defaulted off —
+see "Feature flags" below. The serverless function and its tests stay in the repo.)
+
+### Feature flags
+
+Two surfaces are kept in the codebase but switched off in the UI, gated by `src/lib/features.ts`:
+
+| Flag | Default | Hides |
+| --- | --- | --- |
+| `FEATURE_COMPETITOR_FINDER` | `false` | the "Find competitors" entry point in the library's Recipients view |
+| `FEATURE_TEST_PANEL` | `false` | the "paste a sample to test" panel and the per-row "Test this" action |
+
+Re-enabling either is a single edit: flip its constant to `true` in `src/lib/features.ts`. The
+components (`CompetitorFinder`, `TestPanel`), the `api/competitors.ts` function, and all of their tests
+remain in the repo regardless of the flags.
 
 ### Handoff between the pages
 
