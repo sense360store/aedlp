@@ -19,6 +19,7 @@ import type {
   BoundaryStrategy,
 } from "../types";
 import { AEDLP_RECIPIENT_DOMAINS } from "./recipients";
+import { ukPiiRegexDetectors, ukPiiKeywordPatternDetectors } from "./uk-pii-detectors";
 
 type RxInput = Omit<RegexDetector, "conditionType" | "contextKeywords"> &
   Partial<Pick<RegexDetector, "contextKeywords">>;
@@ -269,7 +270,9 @@ const regexDetectors = [
     description: "17-character vehicle identification number.", country: "GLOBAL", regionLabel: "Global", category: "Personal data (PII)",
     regex: "\\b[A-HJ-NPR-Z0-9]{17}\\b", contextKeywords: ["VIN", "vehicle", "chassis"],
     positiveExamples: ["VIN: 1HGCM82633A004352"], negativeExamples: ["Ref ABC123"],
-    recommendedAction: "silently_track", falsePositiveRisk: "high", notes: ["17-char alphanumerics also appear in other IDs — pair with VIN context keywords."] })
+    recommendedAction: "silently_track", falsePositiveRisk: "high", notes: ["17-char alphanumerics also appear in other IDs — pair with VIN context keywords."] }),
+  /* UK PII batch (gb-postcode, gb-mobile, gb-dob) — ported verbatim from uk-pii-detectors.ts */
+  ...ukPiiRegexDetectors,
 ];
 
 /* ---------------- Phase 1 expansion: UK, EU core, US (regex detectors) ---------------- */
@@ -854,7 +857,9 @@ const keywordPatterns = [
     operator: "AND", proximity: 12,
     positiveExamples: ["Full CRM export attached as a spreadsheet — the entire customer list."],
     negativeExamples: ["Let's schedule the customer onboarding call."],
-    recommendedAction: "warn", falsePositiveRisk: "medium", notes: ["Combine with attachment scanning for strongest coverage."] })
+    recommendedAction: "warn", falsePositiveRisk: "medium", notes: ["Combine with attachment scanning for strongest coverage."] }),
+  /* UK PII batch (kp-gb-identity-bundle, kp-gb-special-category) — ported verbatim from uk-pii-detectors.ts */
+  ...ukPiiKeywordPatternDetectors,
 ];
 
 /* ---------------- industry keyword sets ---------------- */
