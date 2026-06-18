@@ -268,7 +268,7 @@ export default function PolicyCreator() {
           <div className="brand-mark">
             <Icon name="shield" size={17} />
           </div>
-          <div>
+          <div className="brand-text">
             <div className="brand-title">AEDLP Policy Creator</div>
             <div className="brand-sub">Detector library &amp; custom-policy assembler</div>
           </div>
