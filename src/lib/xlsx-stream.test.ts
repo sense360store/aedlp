@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { zipSync, strToU8 } from "fflate";
 import { pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
-import { readSheetNamesStream, parseWorkbookStream } from "./xlsx-stream";
+import { readSheetNamesStream, readSheetHeadersStream, parseWorkbookStream, selectSheet } from "./xlsx-stream";
 import { parseWorkbookLegacy, readSheetNamesLegacy } from "./extract-legacy";
 
 const SAMPLE_XLSX = "handoff/aedlp-policy-creator/project/uploads/enforcer-simulated testnodata 2026-05-12.xlsx";
@@ -79,6 +79,47 @@ function zipXlsx(opts: { sheetName: string; rowsXml: string; sharedStrings?: str
 }
 
 const inlineCell = (ref: string, text: string) => `<c r="${ref}" t="inlineStr"><is><t>${text}</t></is></c>`;
+const numCell = (ref: string, n: number) => `<c r="${ref}"><v>${n}</v></c>`;
+
+/* Multi-sheet .xlsx package builder — mirrors a real enforcer export (several
+   sheets, the contact columns complete only on one of them). Sheets keep workbook
+   order; cells use inline strings so no shared-strings table is needed. */
+function zipXlsxMulti(sheets: { name: string; rowsXml: string }[], level: ZipLevel = 6): Uint8Array {
+  const sheetRels = sheets
+    .map((_, i) => `<Relationship Id="rId${i + 1}" Type="${NS_R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`)
+    .join("");
+  const sheetTags = sheets.map((s, i) => `<sheet name="${s.name}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("");
+  const files: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+        `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+        `<Default Extension="xml" ContentType="application/xml"/>` +
+        `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+        `</Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Relationships xmlns="${NS_PKG}">` +
+        `<Relationship Id="rId1" Type="${NS_R}/officeDocument" Target="xl/workbook.xml"/>` +
+        `</Relationships>`,
+    ),
+    "xl/workbook.xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<workbook xmlns="${NS}" xmlns:r="${NS_R}"><sheets>${sheetTags}</sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + `<Relationships xmlns="${NS_PKG}">${sheetRels}</Relationships>`,
+    ),
+  };
+  sheets.forEach((s, i) => {
+    files[`xl/worksheets/sheet${i + 1}.xml`] = strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<worksheet xmlns="${NS}"><sheetData>${s.rowsXml}</sheetData></worksheet>`,
+    );
+  });
+  return zipSync(files, { level });
+}
 
 /* ============================================================ */
 
@@ -236,5 +277,102 @@ describe("parseWorkbookStream on a very large workbook", () => {
     expect(s.maxBufferChars).toBeLessThan(512 * 1024);
     expect(s.maxBufferChars * 20).toBeLessThan(s.sheetBytes);
     expect(res.map.size * 1000).toBeLessThan(res.scanned);
+  });
+});
+
+describe("multi-sheet workbook — selecting the sheet that actually holds the contact rows", () => {
+  // A workbook mirroring a real enforcer export: three sheets, but the contact
+  // columns are only complete on unauthorised_contacts. The breaches sheet is the
+  // decoy — it has recipient_ads (a broad address alias) AND contact_type, but no
+  // contact_ad, so it must NOT be chosen. Each header has a leading unnamed/index
+  // column (no A1 cell); data rows carry the index in column A.
+  const contactsRows =
+    `<row r="1">${inlineCell("B1", "user_ad")}${inlineCell("C1", "contact_ad")}${inlineCell("D1", "user_name")}${inlineCell("E1", "contact_name")}${inlineCell("F1", "contact_type")}${inlineCell("G1", "explanation")}</row>` +
+    `<row r="2">${numCell("A2", 0)}${inlineCell("B2", "me@corp.com")}${inlineCell("C2", "partner@vendor.com")}${inlineCell("D2", "Me")}${inlineCell("E2", "Partner")}${inlineCell("F2", "external")}${inlineCell("G2", "note")}</row>` +
+    `<row r="3">${numCell("A3", 1)}${inlineCell("B3", "me@corp.com")}${inlineCell("C3", "ally@trusted.io")}${inlineCell("D3", "Me")}${inlineCell("E3", "Ally")}${inlineCell("F3", "external")}${inlineCell("G3", "note")}</row>` +
+    `<row r="4">${numCell("A4", 2)}${inlineCell("B4", "me@corp.com")}${inlineCell("C4", "jdoe@gmail.com")}${inlineCell("D4", "Me")}${inlineCell("E4", "J")}${inlineCell("F4", "freemail")}${inlineCell("G4", "note")}</row>`;
+  const breachesRows =
+    `<row r="1">${inlineCell("B1", "sender_ad")}${inlineCell("C1", "recipient_ads")}${inlineCell("D1", "contact_type")}${inlineCell("E1", "subject")}</row>` +
+    `<row r="2">${numCell("A2", 0)}${inlineCell("B2", "ceo@corp.com")}${inlineCell("C2", "leak@evil.com")}${inlineCell("D2", "external")}${inlineCell("E2", "hi")}</row>` +
+    `<row r="3">${numCell("A3", 1)}${inlineCell("B3", "cfo@corp.com")}${inlineCell("C3", "dump@evil.com")}${inlineCell("D3", "external")}${inlineCell("E3", "yo")}</row>`;
+  const statsRows =
+    `<row r="1">${inlineCell("B1", "Statistics:")}</row>` + `<row r="2">${numCell("A2", 0)}${inlineCell("B2", "total users: 100")}</row>`;
+
+  const fixture = (contactSheetName = "unauthorised_contacts") =>
+    new File(
+      [
+        zipXlsxMulti([
+          { name: "breaches", rowsXml: breachesRows },
+          { name: contactSheetName, rowsXml: contactsRows },
+          { name: "high_level_statistics", rowsXml: statsRows },
+        ]),
+      ],
+      "enforcer.xlsx",
+    );
+
+  it("readSheetHeadersStream returns each sheet's header row (with the leading blank column) in workbook order", async () => {
+    const headers = await readSheetHeadersStream(fixture());
+    expect(headers.map((h) => h.name)).toEqual(["breaches", "unauthorised_contacts", "high_level_statistics"]);
+    expect(headers.find((h) => h.name === "unauthorised_contacts")?.header).toEqual([
+      "",
+      "user_ad",
+      "contact_ad",
+      "user_name",
+      "contact_name",
+      "contact_type",
+      "explanation",
+    ]);
+    const breaches = headers.find((h) => h.name === "breaches")?.header ?? [];
+    expect(breaches).toContain("recipient_ads");
+    expect(breaches).not.toContain("contact_ad"); // the decoy has no contact_ad
+  });
+
+  it("selects unauthorised_contacts and returns domains from contact_ad (never user_ad, never the breaches decoy)", async () => {
+    const file = fixture();
+    const { target, names } = await selectSheet(file);
+    expect(target).toBe("unauthorised_contacts");
+    expect(names).toEqual(["breaches", "unauthorised_contacts", "high_level_statistics"]);
+
+    const res = await parseWorkbookStream(file, target, { allSheetNames: names });
+    expect(res.sheetName).toBe("unauthorised_contacts");
+    expect(res.scanned).toBe(3);
+    // domains come from contact_ad…
+    expect([...res.map.keys()].sort()).toEqual(["gmail.com", "trusted.io", "vendor.com"]);
+    // …never the sender column (user_ad → corp.com) and never the breaches sheet
+    // (recipient_ads → evil.com).
+    expect(res.map.has("corp.com")).toBe(false);
+    expect(res.map.has("evil.com")).toBe(false);
+    expect(trustedDomainsFromParsed(res)).toEqual(["trusted.io", "vendor.com"]); // external default
+  });
+
+  it("locates the contact sheet by its columns even when it is NOT named like the contact sheet", async () => {
+    // No /unauth/ name anywhere, so selection must scan headers and pick the sheet
+    // carrying contact_ad + contact_type — not the breaches recipient_ads decoy.
+    const file = fixture("Sheet2");
+    const { target } = await selectSheet(file);
+    expect(target).toBe("Sheet2");
+    const res = await parseWorkbookStream(file, target);
+    expect([...res.map.keys()].sort()).toEqual(["gmail.com", "trusted.io", "vendor.com"]);
+    expect(res.map.has("evil.com")).toBe(false);
+  });
+
+  it("honours an explicit sheet override (the user's manual pick)", async () => {
+    const { target } = await selectSheet(fixture(), "breaches");
+    expect(target).toBe("breaches");
+  });
+
+  it("raises the friendly banner listing the sheets when no sheet holds the contact columns", async () => {
+    const file = new File(
+      [
+        zipXlsxMulti([
+          { name: "breaches", rowsXml: breachesRows },
+          { name: "high_level_statistics", rowsXml: statsRows },
+        ]),
+      ],
+      "enforcer.xlsx",
+    );
+    await expect(selectSheet(file)).rejects.toThrow(
+      /recipient email column.*multiple sheets \(breaches, high_level_statistics\)/,
+    );
   });
 });

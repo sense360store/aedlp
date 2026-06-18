@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  chooseSheetByHeaders,
+  columnsNotFoundError,
   emailDomain,
+  hasRequiredPair,
   isCSV,
+  isUnauthSheetName,
   locateColumns,
   parseCSV,
   pickSheet,
@@ -43,6 +47,80 @@ describe("pickSheet", () => {
     expect(pickSheet(["a", "b", "c"])).toBe("a");
     expect(pickSheet(["a", "b", "c"], "b")).toBe("b");
     expect(pickSheet(["a", "b", "c"], "missing")).toBe("a");
+  });
+});
+
+describe("isUnauthSheetName", () => {
+  it("matches the contact sheet name case-insensitively and tolerant of whitespace", () => {
+    expect(isUnauthSheetName("unauthorised_contacts")).toBe(true);
+    expect(isUnauthSheetName("  Unauthorised_Contacts  ")).toBe(true);
+    expect(isUnauthSheetName("unauthorized_contacts")).toBe(true); // US spelling still contains "unauth"
+    expect(isUnauthSheetName("breaches")).toBe(false);
+    expect(isUnauthSheetName("high_level_statistics")).toBe(false);
+  });
+});
+
+describe("hasRequiredPair — the real contact_ad + contact_type pair (sheet selection)", () => {
+  it("is true only when a contact-address column AND a contact-type column are present", () => {
+    // unauthorised_contacts header, with the leading unnamed/index column.
+    expect(hasRequiredPair(["", "user_ad", "contact_ad", "user_name", "contact_name", "contact_type", "explanation"])).toBe(
+      true,
+    );
+    // case / whitespace / separator tolerant
+    expect(hasRequiredPair([" Contact Address ", "Contact Type"])).toBe(true);
+  });
+
+  it("rejects the breaches sheet (recipient_ads + contact_type, but no contact_ad)", () => {
+    // The decoy: it carries an address-ish column and contact_type, but the
+    // address column is recipient_ads — NOT a contact_ad — so it must not qualify.
+    expect(hasRequiredPair(["", "sender_ad", "recipient_ads", "contact_type", "subject"])).toBe(false);
+  });
+
+  it("rejects a sheet missing the type column or the contact-address column", () => {
+    expect(hasRequiredPair(["contact_ad", "user_name"])).toBe(false); // no type column
+    expect(hasRequiredPair(["user_ad", "contact_type"])).toBe(false); // no contact-address column
+    expect(hasRequiredPair([])).toBe(false);
+  });
+});
+
+describe("chooseSheetByHeaders — locate the contact sheet in a multi-sheet workbook", () => {
+  const breaches = { name: "breaches", header: ["", "sender_ad", "recipient_ads", "contact_type", "subject"] };
+  const contacts = {
+    name: "unauthorised_contacts",
+    header: ["", "user_ad", "contact_ad", "user_name", "contact_name", "contact_type", "explanation"],
+  };
+  const stats = { name: "high_level_statistics", header: ["Statistics:"] };
+
+  it("prefers the unauthorised_contacts sheet by name", () => {
+    const { chosen } = chooseSheetByHeaders([breaches, contacts, stats]);
+    expect(chosen).toBe("unauthorised_contacts");
+  });
+
+  it("falls back to the sheet carrying contact_ad + contact_type when no name matches — never the breaches decoy", () => {
+    // Same columns, but the contact sheet is NOT named like the contact sheet.
+    const renamed = { ...contacts, name: "Sheet2" };
+    const { chosen } = chooseSheetByHeaders([breaches, renamed, stats]);
+    expect(chosen).toBe("Sheet2");
+  });
+
+  it("returns chosen=null with a best-guess sheet when no sheet has the required pair", () => {
+    // No sheet has contact_ad. best-guess prefers a sheet with a type column.
+    const { chosen, bestGuess } = chooseSheetByHeaders([breaches, stats]);
+    expect(chosen).toBeNull();
+    expect(bestGuess).toBe("breaches"); // it at least has contact_type
+  });
+});
+
+describe("columnsNotFoundError — multi-sheet banner", () => {
+  it("lists the sheet names found when a multi-sheet workbook had no usable sheet", () => {
+    const err = columnsNotFoundError(["sender_ad", "recipient_ads"], "sheet", ["breaches", "unauthorised_contacts"]);
+    expect(err.message).toMatch(/Columns found: sender_ad, recipient_ads/);
+    expect(err.message).toMatch(/multiple sheets \(breaches, unauthorised_contacts\)/);
+  });
+
+  it("omits the sheet list for a single sheet or CSV (behaviour unchanged)", () => {
+    expect(columnsNotFoundError(["a", "b"], "sheet", ["only"]).message).not.toMatch(/multiple sheets/);
+    expect(columnsNotFoundError(["a", "b"], "CSV").message).toMatch(/recipient email column.*Columns found: a, b/);
   });
 });
 

@@ -4,12 +4,14 @@
    budget and a failure surfaces as an error message instead of taking
    down the browser tab.
 
+   For an .xlsx it locates the sheet that actually holds the contact rows
+   (see selectSheet) rather than assuming the first sheet, then streams it.
    It reports progress and posts back either the aggregated result (the
-   domain -> {types,total} map plus rows scanned and per-type totals),
-   a request for the UI to pick a sheet, or an error.
+   domain -> {types,total} map plus rows scanned and per-type totals) or an
+   error (a friendly banner when no sheet held the contact columns).
    ============================================================ */
-import { isCSV, parseCSV, pickSheet, TARGET_SHEET, type ParsedResult } from "./extract";
-import { parseWorkbookStream, readSheetNamesStream } from "./xlsx-stream";
+import { isCSV, parseCSV, type ParsedResult } from "./extract";
+import { parseWorkbookStream, selectSheet } from "./xlsx-stream";
 import type { ParseRequest, ParseResponse } from "./parse-protocol";
 
 // `self` is the worker global scope; type it minimally to avoid pulling in
@@ -30,15 +32,12 @@ ctx.onmessage = async (e) => {
     if (isCSV(file)) {
       result = await parseCSV(file, (p) => post({ kind: "progress", p }));
     } else {
-      const { names } = await readSheetNamesStream(file);
-      const target = req.sheetName || pickSheet(names);
-      // No obvious target sheet and more than one to choose from -> ask the UI.
-      if (!req.sheetName && names.length > 1 && !TARGET_SHEET.test(target)) {
-        post({ kind: "sheet", names });
-        return;
-      }
+      // Locate the sheet that actually holds the contact rows (never assume the
+      // first sheet); the same selection drives the page and the wizard upload.
+      const { target, names } = await selectSheet(file, req.sheetName);
       result = await parseWorkbookStream(file, target, {
         onProgress: (p) => post({ kind: "progress", p }),
+        allSheetNames: names,
       });
     }
     post({ kind: "result", result });
