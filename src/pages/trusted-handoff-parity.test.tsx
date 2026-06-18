@@ -15,6 +15,15 @@
 // real pages run their real selection + persistence (the extractor's default
 // whitelist, trustedDomainsFromParsed, and the shared saveTrustedDomains), so a
 // divergence here is the app's, never the fixture's.
+//
+// Write parity is necessary but NOT sufficient, and that gap is exactly what
+// shipped broken: the wizard persisted the list correctly, yet it never
+// surfaced, because the Trusted Domains page only read the store when you
+// re-parsed a file — landing on it with a saved list showed the empty dropzone.
+// The second describe below pins the READ side of the same contract: after a
+// wizard upload + finish, opening the Trusted Domains page must show exactly
+// those domains in its curate UI. That cross-page read-back is what the original
+// write-only assertion missed for the wizard entry point.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -120,5 +129,53 @@ describe("Trusted-domain handoff parity — wizard upload === Trusted Domains pa
     expect(fromWizard).toBe(fromExtractor);
     // And the shared value is the expected external-default allow-list.
     expect(JSON.parse(fromWizard as string)).toEqual(EXPECTED);
+  });
+});
+
+// Open the Trusted Domains page fresh on its own route. Used after the wizard
+// has already written the list, to prove the page READS it back on mount.
+function renderTrustedDomainsPage() {
+  return render(
+    <MemoryRouter initialEntries={["/trusted-domain-extractor"]}>
+      <Routes>
+        <Route path="/trusted-domain-extractor" element={<Extractor />} />
+        <Route path="/" element={<div>POLICY_CREATOR_STUB</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("Trusted-domain handoff parity — the Trusted Domains page surfaces the wizard's list", () => {
+  it("reads the store on mount and renders exactly the wizard-saved domains, not an empty dropzone", async () => {
+    resolveWithParsed();
+
+    // The wizard upload + finish is the ONLY write; the list now lives in the
+    // shared store exactly as the wizard reported it.
+    const fromWizard = await storeViaWizardUpload();
+    expect(fromWizard).not.toBeNull();
+    expect(JSON.parse(fromWizard as string)).toEqual(EXPECTED);
+    cleanup(); // unmount the Policy Creator — the saved list stays in localStorage
+
+    // Navigate to the Trusted Domains page as the user would after finishing.
+    const { container } = renderTrustedDomainsPage();
+
+    // It must open straight onto the restored list, never the empty dropzone
+    // that previously hid it.
+    await waitFor(() => expect(container.querySelector(".file-bar")).not.toBeNull());
+    expect(container.querySelector(".dropzone")).toBeNull();
+
+    // The curate UI shows exactly the N domains the wizard reported — same list,
+    // same order — so the user can find and refine them.
+    const rows = Array.from(container.querySelectorAll(".dom-row .dom-name")).map((n) => n.textContent);
+    expect(rows).toEqual(EXPECTED);
+    const whitelist = container.querySelector("textarea.mono") as HTMLTextAreaElement;
+    expect(whitelist.value.split("\n")).toEqual(EXPECTED);
+
+    // And what the page would re-hand-off is byte-identical to the wizard's
+    // write — same key, same serialised string[] — so the read/write loop closes
+    // on the exact value, not merely an equivalent one.
+    fireEvent.click(screen.getByRole("button", { name: "Use in Policy Creator" }));
+    await screen.findByText("POLICY_CREATOR_STUB");
+    expect(localStorage.getItem(TRUSTED_LS_KEY)).toBe(fromWizard);
   });
 });

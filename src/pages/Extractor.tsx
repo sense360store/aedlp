@@ -5,7 +5,7 @@
    browser; the whitelist is handed to the Policy Creator through
    localStorage. Ported from handoff project/app/extractor.jsx.
    ============================================================ */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
 import { TopNav } from "../components/ui/TopNav";
@@ -13,7 +13,7 @@ import { Card } from "../components/ui/Card";
 import { Callout } from "../components/ui/Callout";
 import { CopyButton } from "../components/ui/CopyButton";
 import { useTheme } from "../theme";
-import { saveTrustedDomains } from "../lib/trusted";
+import { loadTrustedDomains, saveTrustedDomains } from "../lib/trusted";
 import { isCSV, emailDomain, type ParsedResult } from "../lib/extract";
 import { parseFile } from "../lib/parseClient";
 
@@ -91,7 +91,11 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
   );
 }
 
-type Stage = "idle" | "parsing" | "sheet" | "ready";
+/* "loaded" = opened on a previously-saved allow-list (no fresh file). The list
+   may have been curated here in an earlier session OR handed over by the
+   Customer setup wizard's optional upload, which persists through this same
+   storage key when it finishes. Both surface identically. */
+type Stage = "idle" | "parsing" | "sheet" | "ready" | "loaded";
 
 /* ---------------- main app ---------------- */
 export default function Extractor() {
@@ -103,6 +107,9 @@ export default function Extractor() {
   const [progress, setProgress] = useState(0);
   const [parsed, setParsed] = useState<ParsedResult | null>(null);
   const [sheetChoice, setSheetChoice] = useState<{ names: string[] }>({ names: [] });
+  // Domains restored from the shared store on mount (a prior extract or the
+  // wizard handoff). Drives the curate UI when there is no freshly-parsed file.
+  const [loaded, setLoaded] = useState<string[]>([]);
 
   // curation state
   const [typeFilter, setTypeFilter] = useState("external");
@@ -112,6 +119,18 @@ export default function Extractor() {
   const [removed, setRemoved] = useState<Set<string>>(() => new Set());
   const [manual, setManual] = useState<{ domain: string }[]>([]);
   const [manualInput, setManualInput] = useState("");
+
+  // Read the shared store once on mount. When a list already exists — saved here
+  // before, or by the wizard's upload on finish — open straight onto it in the
+  // curate UI instead of the empty dropzone, so it is never hidden. Read-only:
+  // nothing is written back until the user takes the explicit handoff.
+  useEffect(() => {
+    const saved = loadTrustedDomains();
+    if (saved.length) {
+      setLoaded(saved);
+      setStage("loaded");
+    }
+  }, []);
 
   const runParse = useCallback(async (f: File, sheetName?: string) => {
     setError("");
@@ -132,6 +151,7 @@ export default function Extractor() {
       setRemoved(new Set());
       setManual([]);
       setSearch("");
+      setLoaded([]); // a fresh parse supersedes any restored list
       setParsed(res);
       // default the type filter to whichever of external/freemail exists
       const types = [...res.typeTotals.keys()];
@@ -143,15 +163,24 @@ export default function Extractor() {
     }
   }, []);
 
-  /* derive the working domain list */
+  /* derive the working domain list — from a freshly-parsed file when there is
+     one, otherwise from the list restored from the store. */
   const baseDomains = useMemo(() => {
-    if (!parsed) return [];
     const out: { domain: string; count: number; manual: boolean }[] = [];
-    for (const [dom, rec] of parsed.map.entries()) {
-      if (removed.has(dom)) continue;
-      const count = typeFilter === "all" ? rec.total : rec.types.get(typeFilter) || 0;
-      if (typeFilter !== "all" && count === 0) continue;
-      out.push({ domain: dom, count, manual: false });
+    if (parsed) {
+      for (const [dom, rec] of parsed.map.entries()) {
+        if (removed.has(dom)) continue;
+        const count = typeFilter === "all" ? rec.total : rec.types.get(typeFilter) || 0;
+        if (typeFilter !== "all" && count === 0) continue;
+        out.push({ domain: dom, count, manual: false });
+      }
+    } else {
+      // Restored allow-list: a plain string[] with no per-type counts, so the
+      // type filter does not apply — every saved domain is in scope.
+      for (const dom of loaded) {
+        if (removed.has(dom)) continue;
+        out.push({ domain: dom, count: 0, manual: false });
+      }
     }
     for (const m of manual) {
       if (removed.has(m.domain)) continue;
@@ -159,7 +188,7 @@ export default function Extractor() {
       out.push({ domain: m.domain, count: 0, manual: true });
     }
     return out;
-  }, [parsed, typeFilter, removed, manual]);
+  }, [parsed, loaded, typeFilter, removed, manual]);
 
   const whitelist = useMemo(
     () =>
@@ -175,6 +204,15 @@ export default function Extractor() {
   const useInPolicyCreator = () => {
     saveTrustedDomains(whitelist);
     navigate("/");
+  };
+
+  // Start over with a fresh upload — drop both the parsed file and any restored
+  // list so the dropzone returns. The saved store is untouched (read-only here)
+  // until an explicit handoff, so leaving this view never discards it.
+  const replaceFile = () => {
+    setStage("idle");
+    setParsed(null);
+    setLoaded([]);
   };
 
   const visible = useMemo(() => {
@@ -296,65 +334,87 @@ export default function Extractor() {
             </Card>
           )}
 
-          {stage === "ready" && parsed && file && (
+          {(stage === "ready" || stage === "loaded") && (
             <>
-              <div className="file-bar">
-                <div className="file-ic">
-                  <Icon name="check" size={18} />
-                </div>
-                <div className="file-meta">
-                  <div className="file-name">{file.name}</div>
-                  <div className="file-sub">
-                    Sheet “{parsed.sheetName}” · {parsed.scanned.toLocaleString()} rows scanned · {fmtBytes(file.size)}
+              {parsed && file ? (
+                <div className="file-bar">
+                  <div className="file-ic">
+                    <Icon name="check" size={18} />
                   </div>
+                  <div className="file-meta">
+                    <div className="file-name">{file.name}</div>
+                    <div className="file-sub">
+                      Sheet “{parsed.sheetName}” · {parsed.scanned.toLocaleString()} rows scanned · {fmtBytes(file.size)}
+                    </div>
+                  </div>
+                  <button className="btn sm" onClick={replaceFile}>
+                    <Icon name="reset" size={13} />
+                    Replace file
+                  </button>
                 </div>
-                <button
-                  className="btn sm"
-                  onClick={() => {
-                    setStage("idle");
-                    setParsed(null);
-                  }}
-                >
-                  <Icon name="reset" size={13} />
-                  Replace file
-                </button>
-              </div>
+              ) : (
+                // Restored from the shared store (a prior extract or the wizard's
+                // upload) — no file to describe; offer the same curate UI plus a
+                // path back to a fresh upload.
+                <div className="file-bar">
+                  <div className="file-ic">
+                    <Icon name="shield" size={18} />
+                  </div>
+                  <div className="file-meta">
+                    <div className="file-name">Saved trusted-domain list</div>
+                    <div className="file-sub">
+                      {loaded.length.toLocaleString()} domain{loaded.length === 1 ? "" : "s"} carried over from your last
+                      extract or the customer setup — review and curate below, then re-save.
+                    </div>
+                  </div>
+                  <button className="btn sm" onClick={replaceFile}>
+                    <Icon name="upload" size={13} />
+                    Upload a file
+                  </button>
+                </div>
+              )}
 
-              <div className="ext-stats">
-                <div className="stat">
-                  <div className="stat-num">{parsed.scanned.toLocaleString()}</div>
-                  <div className="stat-label">Rows scanned</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num">
-                    {(parsed.typeTotals.get(typeFilter) || (typeFilter === "all" ? parsed.scanned : 0)).toLocaleString()}
+              {parsed && (
+                <div className="ext-stats">
+                  <div className="stat">
+                    <div className="stat-num">{parsed.scanned.toLocaleString()}</div>
+                    <div className="stat-label">Rows scanned</div>
                   </div>
-                  <div className="stat-label">{typeFilter} contacts</div>
+                  <div className="stat">
+                    <div className="stat-num">
+                      {(
+                        parsed.typeTotals.get(typeFilter) || (typeFilter === "all" ? parsed.scanned : 0)
+                      ).toLocaleString()}
+                    </div>
+                    <div className="stat-label">{typeFilter} contacts</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-num">{baseDomains.length.toLocaleString()}</div>
+                    <div className="stat-label">Unique domains</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-num accent">{whitelist.length.toLocaleString()}</div>
+                    <div className="stat-label">In whitelist</div>
+                  </div>
                 </div>
-                <div className="stat">
-                  <div className="stat-num">{baseDomains.length.toLocaleString()}</div>
-                  <div className="stat-label">Unique domains</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-num accent">{whitelist.length.toLocaleString()}</div>
-                  <div className="stat-label">In whitelist</div>
-                </div>
-              </div>
+              )}
 
               <div className="toolbar-row">
-                <div className="seg">
-                  {["external", "freemail", "all"].map((t) => {
-                    const present = t === "all" || parsed.typeTotals.has(t);
-                    if (!present && t !== "all") return null;
-                    const ct = t === "all" ? parsed.scanned : parsed.typeTotals.get(t) || 0;
-                    return (
-                      <button key={t} className={typeFilter === t ? "active" : ""} onClick={() => setTypeFilter(t)}>
-                        {t}
-                        <span className="ct">{ct.toLocaleString()}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                {parsed && (
+                  <div className="seg">
+                    {["external", "freemail", "all"].map((t) => {
+                      const present = t === "all" || parsed.typeTotals.has(t);
+                      if (!present && t !== "all") return null;
+                      const ct = t === "all" ? parsed.scanned : parsed.typeTotals.get(t) || 0;
+                      return (
+                        <button key={t} className={typeFilter === t ? "active" : ""} onClick={() => setTypeFilter(t)}>
+                          {t}
+                          <span className="ct">{ct.toLocaleString()}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="search-wrap grow">
                   <Icon name="search" size={15} className="search-icon" />
                   <input
@@ -400,7 +460,11 @@ export default function Extractor() {
                 </div>
                 <div className="dom-scroll">
                   {shown.length === 0 && (
-                    <div className="dom-empty">No domains to show. Try a different contact type or clear the search.</div>
+                    <div className="dom-empty">
+                      {parsed
+                        ? "No domains to show. Try a different contact type or clear the search."
+                        : "No domains to show. Clear the search, or upload an export to start a new list."}
+                    </div>
                   )}
                   {shown.map((d) => {
                     const on = !deselected.has(d.domain);
@@ -418,9 +482,9 @@ export default function Extractor() {
                         </span>
                         {d.manual ? (
                           <span className="dom-tag">added</span>
-                        ) : (
+                        ) : d.count > 0 ? (
                           <span className="dom-count">{d.count.toLocaleString()}×</span>
-                        )}
+                        ) : null}
                         <button
                           className="dom-x"
                           title="Remove from list"
