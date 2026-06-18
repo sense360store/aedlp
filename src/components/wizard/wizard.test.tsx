@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { Wizard } from "./Wizard";
@@ -284,5 +285,105 @@ describe("Wizard step two (optional enforcer-export upload)", () => {
       globalThis.fetch = realFetch;
       xhrOpen.mockRestore();
     }
+  });
+});
+
+/* ===================== accessibility: focus management ===================== */
+describe("Wizard accessibility — dialog focus", () => {
+  // A trigger button + a wizard whose open state it controls, so we can assert
+  // focus moves into the dialog on open and returns to the trigger on close.
+  function Harness() {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button data-testid="trigger" onClick={() => setOpen(true)}>
+          Open
+        </button>
+        <Wizard
+          open={open}
+          industries={INDUSTRIES}
+          onFinish={() => setOpen(false)}
+          onSkip={() => setOpen(false)}
+        />
+      </>
+    );
+  }
+
+  it("moves focus into the dialog (the first field) on open", () => {
+    setup();
+    expect(document.activeElement).toBe(screen.getByPlaceholderText(/Globex Corporation/));
+  });
+
+  it("is a labelled modal dialog whose title/description ids resolve", () => {
+    setup();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const labelId = dialog.getAttribute("aria-labelledby")!;
+    const descId = dialog.getAttribute("aria-describedby")!;
+    expect(document.getElementById(labelId)?.textContent).toMatch(/Set up a policy/i);
+    expect(document.getElementById(descId)).not.toBeNull();
+  });
+
+  it("traps Tab inside the dialog, wrapping last→first and first→last", () => {
+    setup();
+    fillStepOne("Globex", "Financial services"); // enables Next so it is focusable
+    const dialog = screen.getByRole("dialog");
+    const close = screen.getByRole("button", { name: "Close" });
+    const next = screen.getByRole("button", { name: "Next" });
+
+    // Tab off the last focusable wraps to the first (the close button).
+    next.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+
+    // Shift+Tab off the first focusable wraps to the last (Next).
+    close.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(next);
+  });
+
+  it("reclaims focus into the dialog if it has escaped on Tab", () => {
+    setup();
+    const dialog = screen.getByRole("dialog");
+    (document.activeElement as HTMLElement)?.blur(); // focus now on <body>
+    expect(dialog.contains(document.activeElement)).toBe(false);
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
+  });
+
+  it("returns focus to the trigger when closed via Escape", () => {
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    // Opened: focus has moved into the dialog…
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByPlaceholderText(/Globex Corporation/));
+
+    // …and Escape closes it and hands focus back to the trigger.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("focuses the dropzone on step two, and it is keyboard-operable (Enter/Space)", () => {
+    setup();
+    goToStepTwo();
+    const dz = document.querySelector(".wiz-dropzone") as HTMLElement;
+    expect(dz.getAttribute("role")).toBe("button");
+    expect(dz.getAttribute("tabindex")).toBe("0");
+    expect(dz.getAttribute("aria-label")).toMatch(/enforcer export/i);
+    // Focus lands on the dropzone (first control of step two), not the close icon.
+    expect(document.activeElement).toBe(dz);
+
+    // Enter and Space both activate it, opening the hidden file picker.
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click").mockImplementation(() => {});
+    fireEvent.keyDown(dz, { key: "Enter" });
+    fireEvent.keyDown(dz, { key: " " });
+    expect(clickSpy).toHaveBeenCalledTimes(2);
+    clickSpy.mockRestore();
   });
 });

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="AEDLP Policy Creator">
+  <title>AEDLP Policy Creator</title>
+  <defs>
+    <linearGradient id="aedlp-mark" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#aedlp-mark)"/>
+  <path transform="translate(4 4)"
+        d="M12 3l7 3v6c0 4.2-2.9 7.4-7 8.5C7.9 19.4 5 16.2 5 12V6l7-3z"
+        fill="#ffffff"/>
+</svg>

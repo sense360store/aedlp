@@ -277,6 +277,9 @@ export default function PolicyCreator() {
         <button
           className="btn sm wiz-reopen"
           onClick={onReopenWizard}
+          // Keep an accessible name even at narrow widths, where the CSS hides
+          // the visible label and leaves only the icon.
+          aria-label="Customer setup — open the policy wizard"
           title="Set up a policy for a customer (re-open the wizard)"
         >
           <Icon name="sparkle" size={14} />
