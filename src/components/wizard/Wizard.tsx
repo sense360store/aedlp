@@ -1,20 +1,30 @@
 /* ============================================================
-   Wizard front door (Phase A) — a light overlay/step on top of the
-   Policy Creator, not a new route.
+   Wizard front door — a light overlay/step on top of the Policy
+   Creator, not a new route.
 
-   Step one only: customer name + industry. Finishing lands the user in
-   the Policy Creator with the industry pre-filter active and the policy
-   name / description / tags pre-filled (all editable, nothing added to
-   conditions). Skip — and Close / Escape / a backdrop press, which all
-   behave the same for this phase — drop straight into the normal
-   library with no filter and no pre-fill.
+   Step one (Phase A): customer name + industry.
+   Step two (Phase B, OPTIONAL): upload an enforcer export. It reuses
+   the extractor's streaming Web Worker parser (parseFile) and progress
+   indicator — no new parser, no backend, nothing leaves the browser —
+   and pre-loads the trusted-domain list from the file. The step is
+   genuinely skippable; finishing with no file behaves exactly like
+   Phase A (industry pre-filter + pre-filled metadata, no trusted list).
 
-   Presented modal-style so the wizard, not the library, is the focus on
-   first load; intentionally light otherwise (the spreadsheet-upload step
-   is Phase B). Built entirely from existing styles.css tokens.
+   Finishing hands the chosen account up to the page, plus the extracted
+   trusted-domain list (or null). The page persists those through the
+   SAME extractor storage key, so the list surfaces through the existing
+   handoff exactly as if it had been curated on the Trusted Domains page.
+   It is never auto-added to a condition.
+
+   Close / Escape / a backdrop press cancel the whole wizard (same as
+   Phase A's Skip) on either step; "Skip" (step one) skips the wizard and
+   "Skip this step" (step two) finishes without a trusted list. Built
+   entirely from existing styles.css tokens (light/dark, narrow widths).
    ============================================================ */
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { Icon } from "../ui/Icon";
+import { parseFile } from "../../lib/parseClient";
+import { isCSV, trustedDomainsFromParsed } from "../../lib/extract";
 import type { WizardAccount } from "../../lib/wizard";
 
 export interface WizardProps {
@@ -22,30 +32,63 @@ export interface WizardProps {
   open: boolean;
   /** Industries offered in the dropdown (derived from the library). */
   industries: string[];
-  /** Land in the Policy Creator with this account's pre-filter + metadata. */
-  onFinish: (account: WizardAccount, dontShowAgain: boolean) => void;
+  /**
+   * Land in the Policy Creator with this account's pre-filter + metadata.
+   * `trustedDomains` carries the list extracted from an uploaded enforcer
+   * export (non-empty), or null when the upload was skipped / unusable.
+   */
+  onFinish: (account: WizardAccount, dontShowAgain: boolean, trustedDomains: string[] | null) => void;
   /** Drop into the normal library; Close, Escape and backdrop route here too. */
   onSkip: (dontShowAgain: boolean) => void;
 }
 
+type Step = 1 | 2;
+
+/* Step-two upload state machine. "empty"/"error" both land cleanly (no trusted
+   list, a quiet note) — never an error wall. */
+type UploadStage = "idle" | "parsing" | "sheet" | "ready" | "empty" | "error";
+
 export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
+  const [step, setStep] = useState<Step>(1);
   const [customer, setCustomer] = useState("");
   const [industry, setIndustry] = useState("");
   const [dontShowAgain, setDontShowAgain] = useState(false);
+
+  // Step-two upload state.
+  const [stage, setStage] = useState<UploadStage>("idle");
+  const [progress, setProgress] = useState(0);
+  const [fileName, setFileName] = useState("");
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [domains, setDomains] = useState<string[]>([]);
+  const [errorMsg, setErrorMsg] = useState("");
+
   const inputRef = useRef<HTMLInputElement>(null);
+  // Guards against a slow parse resolving after the user moved on / reopened.
+  const parseToken = useRef(0);
   const titleId = useId();
   const descId = useId();
 
   // Fresh start every time the wizard opens; focus the first field.
   useEffect(() => {
     if (!open) return;
+    setStep(1);
     setCustomer("");
     setIndustry("");
     setDontShowAgain(false);
+    setStage("idle");
+    setProgress(0);
+    setFileName("");
+    setSheetNames([]);
+    setPendingFile(null);
+    setDomains([]);
+    setErrorMsg("");
+    parseToken.current++;
     inputRef.current?.focus();
   }, [open]);
 
-  // Escape behaves like Skip / Close for this phase, honouring the checkbox.
+  // Escape cancels the whole wizard on either step (same as Skip / Close),
+  // honouring the checkbox — the modal's universal "get me out" gesture.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -55,102 +98,316 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, dontShowAgain, onSkip]);
 
+  const runParse = useCallback(async (f: File, sheetName?: string) => {
+    const token = ++parseToken.current;
+    setErrorMsg("");
+    setProgress(0);
+    setFileName(f.name);
+    setPendingFile(f);
+    setStage("parsing");
+    try {
+      const outcome = await parseFile(f, { sheetName, onProgress: (p) => token === parseToken.current && setProgress(p) });
+      if (token !== parseToken.current) return; // superseded (reopened / replaced)
+      if (outcome.kind === "sheet") {
+        setSheetNames(outcome.names);
+        setStage("sheet");
+        return;
+      }
+      const doms = trustedDomainsFromParsed(outcome.result);
+      setDomains(doms);
+      setStage(doms.length ? "ready" : "empty");
+    } catch (e) {
+      if (token !== parseToken.current) return;
+      setDomains([]);
+      setErrorMsg((e as Error)?.message || String(e));
+      setStage("error");
+    }
+  }, []);
+
   if (!open) return null;
 
-  const valid = customer.trim() !== "" && industry !== "";
-  const finish = () => {
-    if (valid) onFinish({ customer: customer.trim(), industry }, dontShowAgain);
+  const valid1 = customer.trim() !== "" && industry !== "";
+  const account = (): WizardAccount => ({ customer: customer.trim(), industry });
+  const next = () => {
+    if (valid1) setStep(2);
   };
-  const skip = () => onSkip(dontShowAgain);
+  const skipWizard = () => onSkip(dontShowAgain);
+  // Step two: finish, carrying the extracted list only when we actually have one.
+  const finish = (withList: boolean) => onFinish(account(), dontShowAgain, withList && stage === "ready" ? domains : null);
+  const parsing = stage === "parsing";
+
+  const replaceFile = () => {
+    parseToken.current++;
+    setStage("idle");
+    setProgress(0);
+    setFileName("");
+    setSheetNames([]);
+    setPendingFile(null);
+    setDomains([]);
+    setErrorMsg("");
+  };
 
   return (
     <div
       className="wiz-overlay"
-      // A press that STARTS on the backdrop dismisses (same as Skip); presses
+      // A press that STARTS on the backdrop cancels (same as Skip); presses
       // inside the dialog do not, so a drag-select can't close it by accident.
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) skip();
+        if (e.target === e.currentTarget) skipWizard();
       }}
     >
       <div className="wiz" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId}>
         <div className="wiz-head">
           <div className="wiz-mark">
-            <Icon name="sparkle" size={16} />
+            <Icon name={step === 1 ? "sparkle" : "upload"} size={16} />
           </div>
           <div className="wiz-titles">
-            <div className="wiz-title" id={titleId}>
-              Set up a policy for a customer
-            </div>
-            <div className="wiz-sub" id={descId}>
-              Pre-filter the library to their industry and pre-fill the policy details. You can change or clear
-              everything afterwards.
-            </div>
+            <div className="wiz-step-badge">Step {step} of 2</div>
+            {step === 1 ? (
+              <>
+                <div className="wiz-title" id={titleId}>
+                  Set up a policy for a customer
+                </div>
+                <div className="wiz-sub" id={descId}>
+                  Pre-filter the library to their industry and pre-fill the policy details. You can change or clear
+                  everything afterwards.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="wiz-title" id={titleId}>
+                  Upload an enforcer export (optional)
+                </div>
+                <div className="wiz-sub" id={descId}>
+                  Pre-load a trusted-domain list from an export — the same .xlsx/.csv the Trusted Domains tool takes.
+                  It’s parsed locally in your browser; nothing is uploaded. This step is optional.
+                </div>
+              </>
+            )}
           </div>
-          <button className="iconbtn wiz-close" onClick={skip} aria-label="Close" title="Close (same as Skip)">
+          <button
+            className="iconbtn wiz-close"
+            onClick={skipWizard}
+            aria-label="Close"
+            title="Close (cancel setup)"
+          >
             <Icon name="x" size={16} />
           </button>
         </div>
 
-        <div className="wiz-body">
-          <label className="wiz-field">
-            <span className="wiz-label">Customer name</span>
-            <input
-              ref={inputRef}
-              className="input"
-              value={customer}
-              onChange={(e) => setCustomer(e.target.value)}
-              placeholder="e.g. Globex Corporation"
-              autoComplete="off"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  finish();
-                }
-              }}
-            />
-          </label>
+        {step === 1 ? (
+          <div className="wiz-body">
+            <label className="wiz-field">
+              <span className="wiz-label">Customer name</span>
+              <input
+                ref={inputRef}
+                className="input"
+                value={customer}
+                onChange={(e) => setCustomer(e.target.value)}
+                placeholder="e.g. Globex Corporation"
+                autoComplete="off"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    next();
+                  }
+                }}
+              />
+            </label>
 
-          <label className="wiz-field">
-            <span className="wiz-label">Industry</span>
-            <select
-              className="input wiz-select"
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              aria-label="Industry"
-            >
-              <option value="" disabled>
-                Select an industry…
-              </option>
-              {industries.map((i) => (
-                <option key={i} value={i}>
-                  {i}
+            <label className="wiz-field">
+              <span className="wiz-label">Industry</span>
+              <select
+                className="input wiz-select"
+                value={industry}
+                onChange={(e) => setIndustry(e.target.value)}
+                aria-label="Industry"
+              >
+                <option value="" disabled>
+                  Select an industry…
                 </option>
-              ))}
-            </select>
-            <span className="wiz-hint">Only industries with their own detectors or a competitor pack are listed.</span>
-          </label>
-        </div>
+                {industries.map((i) => (
+                  <option key={i} value={i}>
+                    {i}
+                  </option>
+                ))}
+              </select>
+              <span className="wiz-hint">Only industries with their own detectors or a competitor pack are listed.</span>
+            </label>
+          </div>
+        ) : (
+          <div className="wiz-body">
+            {stage === "idle" && (
+              <UploadDropzone inputRef={inputRef} onFile={(f) => void runParse(f).catch(() => {})} />
+            )}
+
+            {stage === "parsing" && (
+              <div className="parsing wiz-parsing">
+                <div className="spinner"></div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Reading {fileName}…</div>
+                  <div style={{ fontSize: 12, color: "var(--text-3)" }}>
+                    {pendingFile && isCSV(pendingFile) ? "Streaming rows locally" : "Streaming workbook locally"} ·
+                    nothing is uploaded
+                  </div>
+                  <div className="prog-track">
+                    <div className="prog-bar" style={{ width: (progress * 100).toFixed(0) + "%" }}></div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {stage === "sheet" && (
+              <div className="wiz-sheet">
+                <div className="wiz-label">Pick the sheet that holds the contact rows</div>
+                <div className="export-grid">
+                  {sheetNames.map((n) => (
+                    <button
+                      key={n}
+                      className="btn sm"
+                      onClick={() => pendingFile && void runParse(pendingFile, n).catch(() => {})}
+                    >
+                      <Icon name="layers" size={13} />
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {stage === "ready" && (
+              <>
+                <div className="file-bar">
+                  <div className="file-ic">
+                    <Icon name="check" size={18} />
+                  </div>
+                  <div className="file-meta">
+                    <div className="file-name">{fileName}</div>
+                    <div className="file-sub">
+                      {domains.length.toLocaleString()} trusted domain{domains.length === 1 ? "" : "s"} found
+                    </div>
+                  </div>
+                  <button className="btn sm" onClick={replaceFile}>
+                    <Icon name="reset" size={13} />
+                    Replace
+                  </button>
+                </div>
+                <div className="wiz-note">
+                  These load with your setup; you can review, curate and use them in a recipient-domain condition from
+                  the Policy Creator. Nothing is added automatically.
+                </div>
+                <div className="wiz-preview prev-chips">
+                  {domains.slice(0, 40).map((d) => (
+                    <span key={d} className="prev-chip mono">
+                      {d}
+                    </span>
+                  ))}
+                  {domains.length > 40 && <span className="prev-more">+{(domains.length - 40).toLocaleString()} more</span>}
+                </div>
+              </>
+            )}
+
+            {(stage === "empty" || stage === "error") && (
+              <>
+                <div className="wiz-note quiet">
+                  <Icon name="info" size={14} />
+                  <span>
+                    {stage === "empty"
+                      ? "No usable trusted domains were found in that file."
+                      : `Couldn’t read that file${errorMsg ? `: ${errorMsg}` : "."}`}{" "}
+                    You can continue without a trusted list, or try another file.
+                  </span>
+                </div>
+                <div className="export-grid">
+                  <button className="btn sm" onClick={replaceFile}>
+                    <Icon name="upload" size={13} />
+                    Try another file
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="wiz-foot">
           <label className="wiz-dsa">
-            <input
-              type="checkbox"
-              checked={dontShowAgain}
-              onChange={(e) => setDontShowAgain(e.target.checked)}
-            />
+            <input type="checkbox" checked={dontShowAgain} onChange={(e) => setDontShowAgain(e.target.checked)} />
             Don’t show this wizard again
           </label>
           <div className="wiz-actions">
-            <button className="btn ghost" onClick={skip}>
-              Skip
-            </button>
-            <button className="btn primary" disabled={!valid} onClick={finish}>
-              <Icon name="check" size={14} />
-              Start in Policy Creator
-            </button>
+            {step === 1 ? (
+              <>
+                <button className="btn ghost" onClick={skipWizard}>
+                  Skip
+                </button>
+                <button className="btn primary" disabled={!valid1} onClick={next}>
+                  Next
+                  <Icon name="chevron" size={14} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="btn ghost" onClick={() => setStep(1)} disabled={parsing}>
+                  Back
+                </button>
+                <button className="btn ghost" onClick={() => finish(false)} disabled={parsing}>
+                  Skip this step
+                </button>
+                <button className="btn primary" onClick={() => finish(true)} disabled={parsing}>
+                  <Icon name="check" size={14} />
+                  Start in Policy Creator
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* A light dropzone for step two, reusing the extractor's .dropzone tokens.
+   Click to browse or drag a file in; accepts the same .xlsx/.csv. */
+function UploadDropzone({
+  inputRef,
+  onFile,
+}: {
+  inputRef: RefObject<HTMLInputElement>;
+  onFile: (f: File) => void;
+}) {
+  const [drag, setDrag] = useState(false);
+  return (
+    <div
+      className={"dropzone wiz-dropzone" + (drag ? " drag" : "")}
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDrag(true);
+      }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDrag(false);
+        const f = e.dataTransfer.files[0];
+        if (f) onFile(f);
+      }}
+    >
+      <div className="dz-icon">
+        <Icon name="upload" size={22} />
+      </div>
+      <div className="dz-title">Drop an enforcer export here</div>
+      <div className="dz-sub">.xlsx or .csv — or click to browse. Parsed locally; nothing is uploaded.</div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".xlsx,.csv"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+          e.target.value = "";
+        }}
+      />
     </div>
   );
 }

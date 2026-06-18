@@ -168,6 +168,30 @@ export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Pr
   return { ...r, sheetName: "(csv)", sheetNames: ["(csv)"] };
 }
 
+/**
+ * Default trusted-domain selection from a parsed enforcer export, mirroring the
+ * Trusted Domain Extractor's out-of-the-box view: the external contacts' domains
+ * (the candidate trusted third parties), de-duplicated and sorted. When a sheet
+ * carries no "external" contacts we fall back to the first contact type present,
+ * then to everything — the same precedence the extractor's type filter defaults
+ * to. Returns [] when the sheet yielded no usable domains.
+ *
+ * This is the no-curation default the wizard hands to the Policy Creator; the
+ * user can still review and refine it on the extractor page afterwards. It is
+ * intentionally the same shape the extractor saves, so the handoff is identical.
+ */
+export function trustedDomainsFromParsed(parsed: ParsedResult): string[] {
+  const types = [...parsed.typeTotals.keys()];
+  const typeFilter = types.includes("external") ? "external" : types[0] || "all";
+  const out: string[] = [];
+  for (const [dom, rec] of parsed.map.entries()) {
+    const count = typeFilter === "all" ? rec.total : rec.types.get(typeFilter) || 0;
+    if (typeFilter !== "all" && count === 0) continue;
+    out.push(dom);
+  }
+  return out.sort();
+}
+
 /* ---------------- sheet selection (shared by the streaming reader) ---------------- */
 export function pickSheet(names: string[], preferred?: string): string {
   if (preferred && names.includes(preferred)) return preferred;
