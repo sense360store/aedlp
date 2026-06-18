@@ -5,7 +5,7 @@ import { scoreDetector, filterDetectors } from "./search";
 describe("search and filter", () => {
   it("filters by condition type", () => {
     const regexOnly = filterDetectors(AEDLP_DATA.detectors, { type: "regular_expression" });
-    expect(regexOnly).toHaveLength(59);
+    expect(regexOnly).toHaveLength(62);
     expect(regexOnly.every((d) => d.conditionType === "regular_expression")).toBe(true);
   });
 

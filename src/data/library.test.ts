@@ -6,14 +6,16 @@ import type { ConditionType } from "../types";
  * Library count guard: the prototype data.js ported 71 detectors; Phase 1
  * adds 22 regex detectors (UK, EU core, US), Phase 2 adds 10 more
  * (Aerospace, Defence & Export Control: 4 regex, 4 keyword, 2 keyword_pattern),
- * and the batch-1 competitor packs add 2 recipient_domain detectors
- * (Aerospace & Defence, Financial Services) for a total of 105. This pins the
- * count and condition-type coverage so a later edit cannot silently drop or
- * duplicate a detector.
+ * the batch-1 competitor packs add 2 recipient_domain detectors
+ * (Aerospace & Defence, Financial Services), and the UK PII batch adds 5
+ * detectors (3 regex: gb-postcode, gb-mobile, gb-dob; 2 keyword_pattern:
+ * kp-gb-identity-bundle, kp-gb-special-category) for a total of 110. This pins
+ * the count and condition-type coverage so a later edit cannot silently drop
+ * or duplicate a detector.
  */
 describe("AEDLP_DATA library (prototype parity)", () => {
-  it("holds the prototype set plus the Phase 1, Phase 2 and competitor-pack expansions (105 detectors)", () => {
-    expect(AEDLP_DATA.detectors).toHaveLength(105);
+  it("holds the prototype set plus the Phase 1, Phase 2, competitor-pack and UK PII expansions (110 detectors)", () => {
+    expect(AEDLP_DATA.detectors).toHaveLength(110);
   });
 
   it("covers all five condition types", () => {
@@ -33,9 +35,9 @@ describe("AEDLP_DATA library (prototype parity)", () => {
       counts[d.conditionType] = (counts[d.conditionType] || 0) + 1;
     }
     expect(counts).toEqual({
-      regular_expression: 59,
+      regular_expression: 62,
       keyword: 15,
-      keyword_pattern: 9,
+      keyword_pattern: 11,
       recipient_domain: 5,
       file_extension: 17,
     });

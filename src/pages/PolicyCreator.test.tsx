@@ -51,7 +51,7 @@ describe("PolicyCreator page", () => {
     const { container } = renderPage();
     expect(screen.getByText("AEDLP Policy Creator")).toBeTruthy();
     expect(screen.getByText("Detector library & custom-policy assembler")).toBeTruthy();
-    expect(container.querySelectorAll(".lib-row").length).toBe(105);
+    expect(container.querySelectorAll(".lib-row").length).toBe(110);
     expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
   });
 
@@ -214,7 +214,7 @@ describe("PolicyCreator wizard front door", () => {
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
 
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(container.querySelectorAll(".lib-row").length).toBe(105);
+    expect(container.querySelectorAll(".lib-row").length).toBe(110);
     expect(industryFilter(container).value).toBe("all");
     expect(nameField(container).value).toBe("");
     expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
@@ -277,7 +277,7 @@ describe("PolicyCreator wizard front door", () => {
     setGlobalDismiss(true);
     const { container } = renderPage();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(container.querySelectorAll(".lib-row").length).toBe(105);
+    expect(container.querySelectorAll(".lib-row").length).toBe(110);
     expect(industryFilter(container).value).toBe("all");
   });
 
