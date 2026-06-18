@@ -98,13 +98,17 @@ export interface Accumulator {
   result(): AccResult;
 }
 
-/* The friendly banner shown when a file is too large to process safely in the
-   browser (its shared-strings table or a single row would exhaust memory). CSV
-   streams line-by-line with flat memory, so that is the escape hatch we point
-   the user at. Kept as an exported constant so the UI can recognise this exact
-   message and present it as guidance rather than a hard "couldn't read" error. */
+/* The friendly banner shown ONLY in the genuine extreme case: a file whose text
+   content is so large that even streaming it would exhaust the browser tab (its
+   shared-strings table runs past the ~1 GB streaming ceiling, a single row is
+   pathologically huge, or the tab is already under memory pressure). Ordinary
+   large exports — 115 MB, 250 MB — now stream and parse normally; this is the
+   last-resort backstop, not the gate. CSV streams line-by-line with flat memory
+   and has no such limit, so that is the escape hatch we point the user at. Kept
+   as an exported constant so the UI can recognise this exact message and present
+   it as calm guidance rather than a hard "couldn't read" error. */
 export const CSV_FALLBACK_MESSAGE =
-  "This file is very large. Export just the unauthorised_contacts sheet as CSV and upload that.";
+  "This file is too large to process safely in the browser — its text content exceeds the ~1 GB streaming limit. Export just the unauthorised_contacts sheet as CSV and upload that instead.";
 
 /** The too-large guardrail error (see CSV_FALLBACK_MESSAGE). Thrown the moment a
  *  memory ceiling is about to be crossed, so the tab can never OOM. */

@@ -11,7 +11,8 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 const { TOO_LARGE } = vi.hoisted(() => ({
-  TOO_LARGE: "This file is very large. Export just the unauthorised_contacts sheet as CSV and upload that.",
+  TOO_LARGE:
+    "This file is too large to process safely in the browser — its text content exceeds the ~1 GB streaming limit. Export just the unauthorised_contacts sheet as CSV and upload that instead.",
 }));
 
 vi.mock("../lib/parseClient", () => ({
