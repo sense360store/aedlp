@@ -154,6 +154,20 @@ code { font-family: var(--font-mono); }
 .callout.warn { background: var(--warn-bg); border-color: var(--warn-border); }
 .callout.warn .c-icon, .callout.warn .c-title { color: var(--warn); }
 
+/* Privacy-safe parse-failure banner (Trusted Domains page + wizard upload). */
+.diag-banner { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--warn-border);
+  background: var(--warn-bg); border-radius: var(--radius-sm); font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.diag-banner .diag-head { display: flex; align-items: center; gap: 8px; }
+.diag-banner .diag-icon { flex-shrink: 0; color: var(--warn); }
+.diag-banner .diag-title { font-weight: 650; font-size: 12.5px; color: var(--text); }
+.diag-banner .diag-msg { margin-top: 6px; color: var(--text-2); word-break: break-word; }
+.diag-banner .diag-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 10px 0 0; }
+.diag-banner .diag-grid dt { color: var(--text-3); font-size: 11px; }
+.diag-banner .diag-grid dd { margin: 0; color: var(--text-2); font-size: 11.5px; min-width: 0; word-break: break-word; }
+.diag-banner .diag-grid dd.mono { font-family: var(--font-mono); font-size: 10.5px; }
+.diag-banner .diag-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.diag-banner .diag-note { font-size: 10.5px; color: var(--text-3); }
+
 .copybtn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 7px;
   font-size: 11px; font-weight: 560; border: 1px solid var(--border); background: var(--surface-2);
   color: var(--text-2); transition: all .14s; }

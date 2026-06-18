@@ -12,3 +12,10 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/**
+ * App version / commit, injected at build time by Vite's `define` (see
+ * vite.config.ts). Read via the typeof guard in lib/diagnostics.ts so a bare
+ * unit-test run without the define still type-checks and runs.
+ */
+declare const __APP_VERSION__: string;

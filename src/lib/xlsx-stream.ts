@@ -31,6 +31,7 @@ import {
   type ResolvedColumns,
   type SheetHeader,
 } from "./extract";
+import { debug, headerLabels, type ParseDiagnostics } from "./diagnostics";
 
 /* ---------------- memory guardrails (a high backstop, not the gate) ----------------
    The sheet rows stream with bounded memory (one decompression chunk + the running
@@ -564,19 +565,48 @@ export async function selectSheet(
   file: Blob,
   override?: string,
   limits?: Partial<StreamLimits>,
+  diag?: ParseDiagnostics,
 ): Promise<{ target: string; names: string[] }> {
   const { names } = await readSheetNamesStream(file);
-  if (override) return { target: override, names };
+  if (diag) {
+    diag.kind = "xlsx";
+    diag.sheetNames = names;
+  }
+  debug("xlsx:sheets", { sheetNames: names });
+  if (override) {
+    if (diag) diag.chosenSheet = override;
+    debug("xlsx:sheet-override", { chosen: override });
+    return { target: override, names };
+  }
   const named = names.find(isUnauthSheetName);
-  if (named) return { target: named, names };
-  if (names.length === 1) return { target: names[0], names };
+  if (named) {
+    if (diag) diag.chosenSheet = named;
+    debug("xlsx:sheet-by-name", { chosen: named });
+    return { target: named, names };
+  }
+  if (names.length === 1) {
+    if (diag) diag.chosenSheet = names[0];
+    return { target: names[0], names };
+  }
 
   const headers = await readSheetHeadersStream(file, limits);
+  // Record every sheet's header labels (structure only) so a failed multi-sheet
+  // selection can report what each sheet actually contained.
+  if (diag) diag.sheets = headers.map((h) => ({ name: h.name, header: headerLabels(h.header) }));
   const { chosen, bestGuess } = chooseSheetByHeaders(headers);
-  if (chosen) return { target: chosen, names };
+  if (chosen) {
+    if (diag) diag.chosenSheet = chosen;
+    debug("xlsx:sheet-by-headers", { chosen });
+    return { target: chosen, names };
+  }
 
   const guess = headers.find((h) => h.name === bestGuess)?.header ?? [];
   const found = guess.map((c) => String(c ?? "").trim()).filter((s) => s !== "");
+  if (diag) {
+    diag.chosenSheet = bestGuess || null;
+    diag.headerRow = found;
+  }
+  debug("xlsx:no-contact-sheet", { sheetNames: names, bestGuess, headers: found });
   throw columnsNotFoundError(found, "sheet", names);
 }
 
@@ -602,6 +632,9 @@ export interface WorkbookStreamOptions {
    *  engine exposes it, else a no-op). Mainly for tests that simulate a tab close
    *  to its memory ceiling and assert a clean abort. */
   memoryProbe?: MemoryProbe;
+  /** Privacy-safe diagnostics record to fill as the sheet streams (header labels,
+   *  row/byte counts) — structure only, never a cell value. */
+  diag?: ParseDiagnostics;
 }
 
 export async function parseWorkbookStream(
@@ -609,10 +642,14 @@ export async function parseWorkbookStream(
   sheetName: string,
   options: WorkbookStreamOptions = {},
 ): Promise<ParsedResult> {
-  const { onProgress, onRows, onStats, allSheetNames } = options;
+  const { onProgress, onRows, onStats, allSheetNames, diag } = options;
   const limits = resolveLimits(options.limits);
   const probe = options.memoryProbe ?? defaultMemoryProbe;
   const size = file.size || 0;
+  if (diag) {
+    diag.kind = "xlsx";
+    if (!diag.chosenSheet) diag.chosenSheet = sheetName;
+  }
 
   // ---- pass 1: workbook metadata + streamed shared strings ----
   // The shared-strings table streams in one <si> at a time (never materialised as a
@@ -642,6 +679,7 @@ export async function parseWorkbookStream(
   let sheetBytes = 0;
   let rowsExamined = 0;
   let reported = 0;
+  let lastDebugBytes = 0;
   let sheetDone = false;
   // Set when detection exhausts its scan window without finding an address column.
   // We then stop immediately instead of parsing every remaining row of a huge
@@ -655,6 +693,7 @@ export async function parseWorkbookStream(
     resolved = true;
     colType = r.type;
     colAddr = r.addr;
+    debug("xlsx:columns", { sheet: sheetName, headers: diag?.headerRow ?? [], addr: r.addr, type: r.type });
     // Data rows the resolver buffered while detecting (only the email-scan
     // fallback buffers; an alias hit resolves on the header row with none).
     for (const row of r.replay) acc.add(colType >= 0 ? row[colType] : "", row[colAddr]);
@@ -674,7 +713,13 @@ export async function parseWorkbookStream(
         return;
       }
       if (!nonBlank) return;
-      const r = resolver.feed(denseRow(rowXml, sharedStrings));
+      const dense = denseRow(rowXml, sharedStrings);
+      // The first non-blank row is the header row — record its labels (only).
+      if (diag && diag.headerRow.length === 0) {
+        const labels = headerLabels(dense);
+        if (labels.length) diag.headerRow = labels;
+      }
+      const r = resolver.feed(dense);
       if (r) {
         apply(r);
         return;
@@ -712,6 +757,7 @@ export async function parseWorkbookStream(
     if (onRows && rowsExamined - reported >= 2048) {
       reported = rowsExamined;
       onRows(rowsExamined);
+      debug("xlsx:rows", { sheet: sheetName, rows: rowsExamined });
     }
   };
 
@@ -722,6 +768,11 @@ export async function parseWorkbookStream(
       if (aborted) return;
       assertMemoryOk(probe); // abort cleanly if the tab is near its heap ceiling — never OOM
       sheetBytes += chunk.length;
+      if (diag) diag.bytesRead = sheetBytes;
+      if (sheetBytes - lastDebugBytes >= 4 * 1024 * 1024) {
+        lastDebugBytes = sheetBytes;
+        debug("xlsx:bytes", { sheet: sheetName, sheetBytes });
+      }
       feed(decoder.decode(chunk, { stream: !final }));
       if (final) sheetDone = true;
     },
@@ -739,9 +790,11 @@ export async function parseWorkbookStream(
     const r = aborted ? null : resolver.finalize();
     if (r) apply(r);
     else {
+      if (diag && diag.headerRow.length === 0) diag.headerRow = resolver.foundHeaders();
       // Report the (bounded) work done even on the failure path, so callers and
       // tests can confirm only a small prefix of a wrong-shape file was ever read.
       onStats?.({ scannedRows: 0, maxBufferChars, sheetBytes, rowsExamined });
+      debug("xlsx:no-columns", { sheet: sheetName, headers: diag?.headerRow ?? [], rowsExamined });
       throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
     }
   }
@@ -749,5 +802,11 @@ export async function parseWorkbookStream(
   const r = acc.result();
   onRows?.(rowsExamined);
   onStats?.({ scannedRows: r.scanned, maxBufferChars, sheetBytes, rowsExamined });
+  if (diag) {
+    diag.rowCount = r.scanned;
+    diag.bytesRead = sheetBytes;
+    diag.chosenSheet = sheetName;
+  }
+  debug("xlsx:done", { sheet: sheetName, rows: r.scanned, sheetBytes });
   return { ...r, sheetName };
 }

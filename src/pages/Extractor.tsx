@@ -12,9 +12,11 @@ import { TopNav } from "../components/ui/TopNav";
 import { Card } from "../components/ui/Card";
 import { Callout } from "../components/ui/Callout";
 import { CopyButton } from "../components/ui/CopyButton";
+import { DiagnosticBanner } from "../components/ui/DiagnosticBanner";
 import { useTheme } from "../theme";
 import { loadTrustedDomains, saveTrustedDomains } from "../lib/trusted";
 import { isCSV, emailDomain, isTooLargeError, type ParsedResult } from "../lib/extract";
+import { diagnosticsFromError, type ParseDiagnostics } from "../lib/diagnostics";
 import { parseFile } from "../lib/parseClient";
 
 function fmtBytes(n: number): string {
@@ -42,7 +44,15 @@ function download(name: string, text: string, mime?: string) {
 }
 
 /* ---------------- dropzone ---------------- */
-function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string }) {
+function Dropzone({
+  onFile,
+  error,
+  diagnostics,
+}: {
+  onFile: (f: File) => void;
+  error: string;
+  diagnostics: ParseDiagnostics | null;
+}) {
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   return (
@@ -89,6 +99,10 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
           <Callout tone="info" title="This file is too large to read in the browser">
             {error}
           </Callout>
+        ) : diagnostics ? (
+          // A genuine read failure — show what the parser structurally saw, plus
+          // a local "Download diagnostic".
+          <DiagnosticBanner diagnostics={diagnostics} />
         ) : (
           <Callout tone="warn" title="Couldn't read that file">
             {error}
@@ -110,6 +124,9 @@ export default function Extractor() {
   const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState("");
+  // Structure-only diagnostics for a failed parse (drives the failure banner +
+  // the local "Download diagnostic"); null when there is no failure to report.
+  const [diagnostics, setDiagnostics] = useState<ParseDiagnostics | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [rows, setRows] = useState(0);
@@ -142,6 +159,7 @@ export default function Extractor() {
 
   const runParse = useCallback(async (f: File, sheetName?: string) => {
     setError("");
+    setDiagnostics(null);
     setProgress(0);
     setRows(0);
     setStage("parsing");
@@ -167,7 +185,9 @@ export default function Extractor() {
       setTypeFilter(types.includes("external") ? "external" : types[0] || "external");
       setStage("ready");
     } catch (e) {
-      setError((e as Error).message || String(e));
+      const msg = (e as Error).message || String(e);
+      setError(msg);
+      setDiagnostics(diagnosticsFromError(e, f, msg));
       setStage("idle");
     }
   }, []);
@@ -222,6 +242,8 @@ export default function Extractor() {
     setStage("idle");
     setParsed(null);
     setLoaded([]);
+    setError("");
+    setDiagnostics(null);
   };
 
   const visible = useMemo(() => {
@@ -307,7 +329,7 @@ export default function Extractor() {
             </p>
           </div>
 
-          {stage === "idle" && <Dropzone onFile={runParse} error={error} />}
+          {stage === "idle" && <Dropzone onFile={runParse} error={error} diagnostics={diagnostics} />}
 
           {stage === "parsing" && (
             <Card>

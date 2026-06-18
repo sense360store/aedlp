@@ -10,6 +10,7 @@
    (see xlsx-stream.ts) — it never materialises the whole workbook.
    Everything runs in the browser; nothing is uploaded.
    ============================================================ */
+import { debug, headerLabels, type ParseDiagnostics } from "./diagnostics";
 
 export const TARGET_SHEET = /unauth/i; // unauthorised_contacts
 
@@ -353,6 +354,7 @@ export async function parseCSV(
   file: Blob,
   onProgress?: (p: number) => void,
   onRows?: (rows: number) => void,
+  diag?: ParseDiagnostics,
 ): Promise<ParsedResult> {
   const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
   const acc = makeAccumulator();
@@ -366,16 +368,29 @@ export async function parseCSV(
   let read = 0;
   let rowsSeen = 0; // data lines processed once the header is known (for row progress)
   let reported = 0;
+  let lastDebugBytes = 0;
   const total = file.size || 0;
+  if (diag) {
+    diag.kind = "csv";
+    diag.sheetNames = ["(csv)"];
+    diag.chosenSheet = "(csv)";
+  }
   const addRow = (cells: unknown[]) => acc.add(cols!.type >= 0 ? cells[cols!.type] : "", cells[cols!.addr]);
   const apply = (r: ResolvedColumns) => {
     cols = { type: r.type, addr: r.addr };
+    debug("csv:columns", { headers: diag?.headerRow ?? [], addr: r.addr, type: r.type, replay: r.replay.length });
     for (const row of r.replay) addRow(row); // data rows the resolver buffered while detecting
   };
   const handle = (line: string) => {
     if (line === "" || aborted) return;
     const cells = splitCSVLine(line);
     if (!cols) {
+      // The first non-blank line is the header row — record its labels (only),
+      // never the data lines the resolver buffers below it.
+      if (diag && diag.headerRow.length === 0) {
+        const labels = headerLabels(cells);
+        if (labels.length) diag.headerRow = labels;
+      }
       const r = resolver.feed(cells);
       if (r) apply(r);
       // No email column within the bounded scan window: stop now instead of
@@ -400,6 +415,11 @@ export async function parseCSV(
         handle(line);
       }
       if (total) onProgress?.(Math.min(0.99, read / total));
+      if (diag) diag.bytesRead = read;
+      if (read - lastDebugBytes >= 4 * 1024 * 1024) {
+        lastDebugBytes = read;
+        debug("csv:bytes", { bytesRead: read, rows: rowsSeen });
+      }
       if (onRows && rowsSeen - reported >= 2048) {
         reported = rowsSeen;
         onRows(rowsSeen);
@@ -416,11 +436,19 @@ export async function parseCSV(
     // abort), so a wrong-shape file raises the banner here either way.
     const r = resolver.finalize();
     if (r) apply(r);
-    else throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
+    else {
+      if (diag && diag.headerRow.length === 0) diag.headerRow = resolver.foundHeaders();
+      throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
+    }
   }
   onProgress?.(1);
   onRows?.(rowsSeen);
   const r = acc.result();
+  if (diag) {
+    diag.rowCount = r.scanned;
+    diag.bytesRead = read;
+  }
+  debug("csv:done", { rows: r.scanned, bytesRead: read });
   return { ...r, sheetName: "(csv)", sheetNames: ["(csv)"] };
 }
 
