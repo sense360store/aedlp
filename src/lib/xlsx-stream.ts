@@ -39,6 +39,13 @@ const SHARED_STRINGS_RE = /(^|\/)sharedStrings\.xml$/i;
 // compressed file at once and so decompression output stays chunked.
 const READ_CHUNK = 256 * 1024;
 
+// Absolute upper bound on rows examined before the contact columns resolve. A
+// well-formed export resolves on its header row, so this only ever trips on a
+// malformed/wrong-shape file (e.g. a huge run of blank rows ahead of any header):
+// it bounds the work so such a file fails fast to the banner instead of streaming
+// in full and exhausting the tab.
+const MAX_UNRESOLVED_ROWS = 50_000;
+
 /* ---------------- low-level zip streaming ---------------- */
 interface StreamZipOptions {
   onRead?: (bytesRead: number) => void;
@@ -254,12 +261,17 @@ function parseCells(rowXml: string, strings: string[], wantA = -1, wantB = -1): 
   const onlyTwo = wantA >= 0 || wantB >= 0;
   const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
   let m: RegExpExecArray | null;
+  // Cells normally carry an r="B1" reference giving their absolute column. Some
+  // exporters omit it, so fall back to positional order (the running column),
+  // resyncing whenever an explicit reference does appear. Without this, a header
+  // whose cells lack r="" parsed to an empty map — the "Columns found: 0" bug.
+  let autoCol = 0;
   while ((m = cellRe.exec(rowXml))) {
     const attrs = m[1];
     const inner = m[2];
     const refM = /(?:^|\s)r="([A-Z]+)\d+"/.exec(attrs);
-    if (!refM) continue;
-    const col = colIndexFromRef(refM[1]);
+    const col = refM ? colIndexFromRef(refM[1]) : autoCol;
+    autoCol = col + 1;
     if (onlyTwo && col !== wantA && col !== wantB) continue;
     out.set(col, inner === undefined ? "" : cellText(attrs, inner, strings));
   }
@@ -447,6 +459,8 @@ export async function parseWorkbookStream(
   let maxBufferChars = 0;
   let sheetBytes = 0;
   let sheetDone = false;
+  let aborted = false; // detection gave up (no email column) — stop streaming now
+  let unresolvedRows = 0; // rows examined before the columns resolved (bounded)
   const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
 
   const apply = (r: ResolvedColumns) => {
@@ -463,9 +477,22 @@ export async function parseWorkbookStream(
     // mirrors SheetJS's blankrows:false behaviour the old path relied on.
     const nonBlank = body !== undefined && (body.indexOf("<v>") >= 0 || body.indexOf("<is>") >= 0);
     if (!resolved) {
+      // Bound the header search: a malformed/huge file with no detectable header
+      // must not stream unbounded (counts blank rows too, to catch a giant blank
+      // prefix). A well-formed export resolves on row 1, long before this trips.
+      if (++unresolvedRows > MAX_UNRESOLVED_ROWS) {
+        aborted = true;
+        return;
+      }
       if (!nonBlank) return;
       const r = resolver.feed(denseRow(rowXml, sharedStrings));
-      if (r) apply(r);
+      if (r) {
+        apply(r);
+        return;
+      }
+      // Detection has given up within the bounded scan window: stop now instead of
+      // streaming the rest of a wrong-shape file (this is the OOM / ~59s guard).
+      if (resolver.exhausted()) aborted = true;
       return;
     }
     if (!nonBlank) return; // blank data row -> not scanned
@@ -474,7 +501,7 @@ export async function parseWorkbookStream(
   };
 
   const feed = (text: string) => {
-    if (!text) return;
+    if (!text || aborted) return;
     buffer += text;
     // peak resident buffer = the just-appended chunk plus any partial-row tail
     // carried over; this never grows with the row count because every complete
@@ -486,6 +513,7 @@ export async function parseWorkbookStream(
     while ((m = rowRe.exec(buffer))) {
       handleRow(m[0], m[1]);
       consumed = rowRe.lastIndex;
+      if (aborted) break; // stop draining the moment detection gives up
     }
     if (consumed > 0) buffer = buffer.slice(consumed);
   };
@@ -494,6 +522,7 @@ export async function parseWorkbookStream(
     file,
     (n) => n === sheetPath,
     (_name, chunk, final) => {
+      if (aborted) return;
       sheetBytes += chunk.length;
       feed(decoder.decode(chunk, { stream: !final }));
       if (final) sheetDone = true;
@@ -502,14 +531,21 @@ export async function parseWorkbookStream(
       onRead: (read) => {
         if (size) onProgress?.(Math.min(0.99, 0.5 + read / (size * 2)));
       },
-      shouldStop: () => sheetDone,
+      shouldStop: () => sheetDone || aborted,
     },
   );
 
   if (!resolved) {
-    const r = resolver.finalize();
+    // finalize() succeeds only if the email-scan fallback found a column within the
+    // bounded buffer; on the fail-fast abort (or a genuine miss) raise the banner.
+    const r = aborted ? null : resolver.finalize();
     if (r) apply(r);
-    else throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
+    else {
+      // Report the (bounded) work done even on the failure path, so callers and
+      // tests can confirm only a small prefix of a wrong-shape file was ever read.
+      onStats?.({ scannedRows: 0, maxBufferChars, sheetBytes });
+      throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
+    }
   }
   onProgress?.(1);
   const r = acc.result();
