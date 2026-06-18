@@ -21,11 +21,14 @@
    ============================================================ */
 import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import {
+  chooseSheetByHeaders,
   columnsNotFoundError,
   createColumnResolver,
+  isUnauthSheetName,
   makeAccumulator,
   type ParsedResult,
   type ResolvedColumns,
+  type SheetHeader,
 } from "./extract";
 
 const WORKBOOK_PATH = "xl/workbook.xml";
@@ -263,6 +266,94 @@ function parseCells(rowXml: string, strings: string[], wantA = -1, wantB = -1): 
   return out;
 }
 
+// Expand a row's cells into a dense array indexed by column position, so a header
+// row with a leading unnamed/index column (no A cell) lines up as ["", ...labels].
+function denseRow(rowXml: string, strings: string[]): string[] {
+  const cells = parseCells(rowXml, strings);
+  let maxCol = -1;
+  for (const k of cells.keys()) if (k > maxCol) maxCol = k;
+  const dense: string[] = new Array(maxCol + 1).fill("");
+  for (const [k, v] of cells) dense[k] = v;
+  return dense;
+}
+
+/* ---------------- workbook metadata (shared by every reader) ---------------- */
+interface WorkbookMeta {
+  names: string[];
+  nameToRid: Map<string, string>;
+  ridToTarget: Map<string, string>;
+  sharedStrings: string[];
+}
+
+// Read and parse only the small metadata entries (workbook.xml, its rels, and the
+// shared strings) — never a sheet. Shared by the sheet-name lister, the header
+// scanner and the full streaming parser so they agree on names/paths/strings.
+async function readWorkbookMeta(file: Blob, onRead?: (bytesRead: number) => void): Promise<WorkbookMeta> {
+  const meta = await readEntries(
+    file,
+    (n) => n === WORKBOOK_PATH || n === WORKBOOK_RELS_PATH || SHARED_STRINGS_RE.test(n),
+    undefined,
+    onRead,
+  );
+  const wbXml = meta.get(WORKBOOK_PATH);
+  const relsXml = meta.get(WORKBOOK_RELS_PATH);
+  if (!wbXml || !relsXml) throw new Error("This file is not a readable .xlsx workbook.");
+  const { names, nameToRid } = parseWorkbookXml(wbXml);
+  const ridToTarget = parseRels(relsXml);
+  let sharedStrings: string[] = [];
+  for (const [name, xml] of meta) {
+    if (SHARED_STRINGS_RE.test(name)) {
+      sharedStrings = parseSharedStrings(xml);
+      break;
+    }
+  }
+  return { names, nameToRid, ridToTarget, sharedStrings };
+}
+
+// Resolve a sheet name to its decompressed entry path via the workbook rels.
+function sheetPathFor(meta: WorkbookMeta, sheetName: string): string | undefined {
+  const rid = meta.nameToRid.get(sheetName);
+  const target = rid ? meta.ridToTarget.get(rid) : undefined;
+  return target ? resolveXlPath(target) : undefined;
+}
+
+// Stream just the first non-blank row of one sheet (the header), stopping the
+// moment it is parsed — every other entry is skipped without being inflated and
+// the target sheet is inflated only up to its header, so this stays cheap even on
+// a multi-hundred-MB workbook.
+async function readFirstRow(file: Blob, sheetPath: string, sharedStrings: string[]): Promise<string[]> {
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let header: string[] | null = null;
+  const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
+  const scan = () => {
+    rowRe.lastIndex = 0;
+    let consumed = 0;
+    let m: RegExpExecArray | null;
+    while ((m = rowRe.exec(buffer))) {
+      consumed = rowRe.lastIndex;
+      const body = m[1];
+      const nonBlank = body !== undefined && (body.indexOf("<v>") >= 0 || body.indexOf("<is>") >= 0);
+      if (nonBlank) {
+        header = denseRow(m[0], sharedStrings);
+        return;
+      }
+    }
+    if (consumed > 0) buffer = buffer.slice(consumed);
+  };
+  await streamZip(
+    file,
+    (n) => n === sheetPath,
+    (_name, chunk, final) => {
+      if (header !== null) return;
+      buffer += decoder.decode(chunk, { stream: !final });
+      scan();
+    },
+    { shouldStop: () => header !== null },
+  );
+  return header ?? [];
+}
+
 /* ---------------- public API ---------------- */
 export async function readSheetNamesStream(file: Blob): Promise<{ names: string[] }> {
   const entries = await readEntries(file, (n) => n === WORKBOOK_PATH, (done) => done.has(WORKBOOK_PATH));
@@ -271,6 +362,48 @@ export async function readSheetNamesStream(file: Blob): Promise<{ names: string[
   const { names } = parseWorkbookXml(wbXml);
   if (!names.length) throw new Error("This workbook has no sheets.");
   return { names };
+}
+
+// Read the header row of every sheet, in workbook order. Used to locate the
+// contact sheet by its columns when a name match is unavailable.
+export async function readSheetHeadersStream(file: Blob): Promise<SheetHeader[]> {
+  const meta = await readWorkbookMeta(file);
+  const out: SheetHeader[] = [];
+  for (const name of meta.names) {
+    const path = sheetPathFor(meta, name);
+    out.push({ name, header: path ? await readFirstRow(file, path, meta.sharedStrings) : [] });
+  }
+  return out;
+}
+
+/**
+ * Decide which sheet to parse, the SAME way for the Trusted Domains page and the
+ * wizard upload (both go through the worker → here). An explicit `override` (the
+ * user's sheet pick) always wins. Otherwise:
+ *   1. prefer a sheet named like "unauthorised_contacts" (cheap — no header read);
+ *   2. a single-sheet workbook is parsed as-is (the email-scan fallback still
+ *      applies inside parseWorkbookStream);
+ *   3. otherwise inspect every sheet's header and pick the one carrying the real
+ *      required pair (contact_ad + contact_type), never the breaches sheet's
+ *      recipient_ads decoy.
+ * When several sheets exist and none qualifies, raise the friendly banner listing
+ * the sheets found and the best-guess sheet's headers, rather than silently
+ * scanning the wrong sheet.
+ */
+export async function selectSheet(file: Blob, override?: string): Promise<{ target: string; names: string[] }> {
+  const { names } = await readSheetNamesStream(file);
+  if (override) return { target: override, names };
+  const named = names.find(isUnauthSheetName);
+  if (named) return { target: named, names };
+  if (names.length === 1) return { target: names[0], names };
+
+  const headers = await readSheetHeadersStream(file);
+  const { chosen, bestGuess } = chooseSheetByHeaders(headers);
+  if (chosen) return { target: chosen, names };
+
+  const guess = headers.find((h) => h.name === bestGuess)?.header ?? [];
+  const found = guess.map((c) => String(c ?? "").trim()).filter((s) => s !== "");
+  throw columnsNotFoundError(found, "sheet", names);
 }
 
 export interface StreamStats {
@@ -282,6 +415,9 @@ export interface StreamStats {
 export interface WorkbookStreamOptions {
   onProgress?: (p: number) => void;
   onStats?: (stats: StreamStats) => void;
+  /** All sheet names in the workbook, listed in the failure banner so a user of a
+   *  multi-sheet file sees every sheet that was present. */
+  allSheetNames?: string[];
 }
 
 export async function parseWorkbookStream(
@@ -289,36 +425,16 @@ export async function parseWorkbookStream(
   sheetName: string,
   options: WorkbookStreamOptions = {},
 ): Promise<ParsedResult> {
-  const { onProgress, onStats } = options;
+  const { onProgress, onStats, allSheetNames } = options;
   const size = file.size || 0;
 
   // ---- pass 1: workbook metadata + shared strings (small entries only) ----
-  const meta = await readEntries(
-    file,
-    (n) => n === WORKBOOK_PATH || n === WORKBOOK_RELS_PATH || SHARED_STRINGS_RE.test(n),
-    undefined,
-    (read) => {
-      if (size) onProgress?.(Math.min(0.49, read / (size * 2)));
-    },
-  );
-  const wbXml = meta.get(WORKBOOK_PATH);
-  const relsXml = meta.get(WORKBOOK_RELS_PATH);
-  if (!wbXml || !relsXml) throw new Error("This file is not a readable .xlsx workbook.");
-
-  const { nameToRid } = parseWorkbookXml(wbXml);
-  const ridToTarget = parseRels(relsXml);
-  const rid = nameToRid.get(sheetName);
-  const target = rid ? ridToTarget.get(rid) : undefined;
-  if (!target) throw new Error('Sheet "' + sheetName + '" could not be read.');
-  const sheetPath = resolveXlPath(target);
-
-  let sharedStrings: string[] = [];
-  for (const [name, xml] of meta) {
-    if (SHARED_STRINGS_RE.test(name)) {
-      sharedStrings = parseSharedStrings(xml);
-      break;
-    }
-  }
+  const meta = await readWorkbookMeta(file, (read) => {
+    if (size) onProgress?.(Math.min(0.49, read / (size * 2)));
+  });
+  const sheetPath = sheetPathFor(meta, sheetName);
+  if (!sheetPath) throw new Error('Sheet "' + sheetName + '" could not be read.');
+  const sharedStrings = meta.sharedStrings;
 
   // ---- pass 2: stream the target sheet row-by-row ----
   const acc = makeAccumulator();
@@ -332,17 +448,6 @@ export async function parseWorkbookStream(
   let sheetBytes = 0;
   let sheetDone = false;
   const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
-
-  // Expand a row's cells into a dense array indexed by column position. Used only
-  // while locating the header (the data fast-path below reads just two columns).
-  const denseCells = (rowXml: string): string[] => {
-    const cells = parseCells(rowXml, sharedStrings);
-    let maxCol = -1;
-    for (const k of cells.keys()) if (k > maxCol) maxCol = k;
-    const dense: string[] = new Array(maxCol + 1).fill("");
-    for (const [k, v] of cells) dense[k] = v;
-    return dense;
-  };
 
   const apply = (r: ResolvedColumns) => {
     resolved = true;
@@ -359,7 +464,7 @@ export async function parseWorkbookStream(
     const nonBlank = body !== undefined && (body.indexOf("<v>") >= 0 || body.indexOf("<is>") >= 0);
     if (!resolved) {
       if (!nonBlank) return;
-      const r = resolver.feed(denseCells(rowXml));
+      const r = resolver.feed(denseRow(rowXml, sharedStrings));
       if (r) apply(r);
       return;
     }
@@ -404,7 +509,7 @@ export async function parseWorkbookStream(
   if (!resolved) {
     const r = resolver.finalize();
     if (r) apply(r);
-    else throw columnsNotFoundError(resolver.foundHeaders(), "sheet");
+    else throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
   }
   onProgress?.(1);
   const r = acc.result();

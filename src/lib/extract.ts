@@ -53,6 +53,22 @@ export const COL_TYPE_ALIASES = [
   "type",
 ];
 
+/* The contact-side address aliases ONLY — deliberately narrower than
+   COL_ADDR_ALIASES (it excludes the recipient_, email, address and smtp names).
+   This is the set used to IDENTIFY THE RIGHT SHEET in a multi-sheet enforcer
+   export: the breaches sheet carries recipient_ads + contact_type, so the broad
+   alias set would mis-select it; the real contact rows live on the sheet that has
+   a contact_ad column. Column RESOLUTION within the chosen sheet still uses the
+   full COL_ADDR_ALIASES set (and the email-scan fallback) — only sheet SELECTION
+   keys on this narrow pair. */
+export const COL_ADDR_CONTACT = [
+  "contact_ad",
+  "contact_address",
+  "contact_ads",
+  "contact_email",
+  "contact_emails",
+];
+
 export interface DomainRec {
   types: Map<string, number>;
   total: number;
@@ -258,12 +274,18 @@ export function createColumnResolver(): ColumnResolver {
 
 // Friendly, specific error for the genuinely-unresolvable case: keep the calm
 // banner but list the headers the sheet actually had, so the user can see what it
-// contains and which column is missing.
-export function columnsNotFoundError(found: string[], where: "sheet" | "CSV" = "sheet"): Error {
+// contains and which column is missing. For a multi-sheet workbook where no sheet
+// held the contact columns, `sheetNames` is also listed so the user sees every
+// sheet that was in the file (and `found` is the best-guess sheet's headers).
+export function columnsNotFoundError(found: string[], where: "sheet" | "CSV" = "sheet", sheetNames?: string[]): Error {
   const cols = found.length ? `Columns found: ${found.join(", ")}.` : "No column headers were found.";
   const loc = where === "CSV" ? "the CSV header" : "this sheet";
+  const sheets =
+    sheetNames && sheetNames.length > 1
+      ? ` This file has multiple sheets (${sheetNames.join(", ")}); none held the expected contact columns.`
+      : "";
   return new Error(
-    `Could not find a recipient email column in ${loc}. ${cols} ` +
+    `Could not find a recipient email column in ${loc}. ${cols}${sheets} ` +
       `Expected a column such as contact_address, recipient_address or email — or any column of email addresses.`,
   );
 }
@@ -375,6 +397,53 @@ export function trustedDomainsFromParsed(parsed: ParsedResult): string[] {
 export function pickSheet(names: string[], preferred?: string): string {
   if (preferred && names.includes(preferred)) return preferred;
   return names.find((n) => TARGET_SHEET.test(n)) || names[0];
+}
+
+// Tier-1 sheet match: the enforcer's contact rows conventionally live on a sheet
+// named "unauthorised_contacts". Match case-insensitively and tolerant of
+// surrounding whitespace (TARGET_SHEET also keeps looser spellings working).
+export function isUnauthSheetName(name: string): boolean {
+  return TARGET_SHEET.test(String(name ?? "").trim());
+}
+
+// Does this header row carry the real required pair — a contact-side address
+// column (contact_ad…) AND a contact-type column? This is what distinguishes the
+// unauthorised_contacts sheet from the breaches sheet (which has recipient_ads +
+// contact_type but no contact_ad). Case-, whitespace- and separator-insensitive,
+// and tolerant of a leading unnamed/index column (an empty header matches nothing).
+export function hasRequiredPair(cells: unknown[]): boolean {
+  const canon = cells.map(canonHeader);
+  return aliasIndex(canon, COL_ADDR_CONTACT) >= 0 && aliasIndex(canon, COL_TYPE_ALIASES) >= 0;
+}
+
+export interface SheetHeader {
+  name: string;
+  header: unknown[];
+}
+
+export interface SheetChoice {
+  /** the auto-selected sheet (a name from `sheets`), or null when none qualifies. */
+  chosen: string | null;
+  /** the sheet to attempt/report when `chosen` is null — the most contact-like one. */
+  bestGuess: string;
+}
+
+// Pick the sheet that holds the unauthorised-contact rows from a multi-sheet
+// workbook, by inspecting each sheet's header row:
+//   1. prefer a sheet named like "unauthorised_contacts" (case-insensitive);
+//   2. otherwise the first sheet whose header carries the real required pair
+//      (contact_ad + contact_type).
+// When neither matches, `chosen` is null and `bestGuess` names the most
+// contact-like sheet (one with a contact-type column, else the first), so the
+// caller can surface a useful banner instead of silently scanning the wrong sheet.
+export function chooseSheetByHeaders(sheets: SheetHeader[]): SheetChoice {
+  const chosen =
+    sheets.find((s) => isUnauthSheetName(s.name))?.name ??
+    sheets.find((s) => hasRequiredPair(s.header))?.name ??
+    null;
+  const bestGuess =
+    chosen ?? sheets.find((s) => locateColumns(s.header).type >= 0)?.name ?? sheets[0]?.name ?? "";
+  return { chosen, bestGuess };
 }
 
 export function isCSV(file: File): boolean {
