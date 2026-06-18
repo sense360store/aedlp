@@ -592,3 +592,49 @@ code { font-family: var(--font-mono); }
 /* danger-toned callout (lookup error state) */
 .callout.danger { background: var(--danger-bg); border-color: var(--danger-border); }
 .callout.danger .c-icon, .callout.danger .c-title { color: var(--danger); }
+
+/* ============================================================
+   Wizard front door (Phase A)
+   A light, modal-style overlay/step on top of the Policy Creator —
+   not a new route. Built from existing tokens only, so it tracks the
+   light/dark themes and stays usable at narrow widths.
+   ============================================================ */
+.wiz-reopen { flex-shrink: 0; }
+.wiz-reopen svg { color: var(--accent); }
+
+.wiz-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: color-mix(in srgb, #0a0c10 48%, transparent);
+  backdrop-filter: saturate(120%) blur(3px); animation: wiz-fade .14s ease; }
+@keyframes wiz-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.wiz { width: 100%; max-width: 480px; max-height: calc(100vh - 48px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-md); display: flex; flex-direction: column; }
+.wiz-head { display: flex; align-items: flex-start; gap: 11px; padding: 16px 16px 12px; }
+.wiz-mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0;
+  background: var(--accent-weak); color: var(--accent-text); border: 1px solid var(--accent-weak-border); }
+.wiz-titles { flex: 1; min-width: 0; }
+.wiz-title { font-size: 15px; font-weight: 680; letter-spacing: -.01em; }
+.wiz-sub { font-size: 12px; color: var(--text-3); margin-top: 3px; line-height: 1.5; }
+.wiz-close { flex-shrink: 0; width: 28px; height: 28px; }
+
+.wiz-body { padding: 6px 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+.wiz-field { display: flex; flex-direction: column; gap: 6px; }
+.wiz-label { font-size: 12px; font-weight: 620; color: var(--text-2); }
+.wiz-select { cursor: pointer; }
+.wiz-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+
+.wiz-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 13px 16px; border-top: 1px solid var(--border); background: var(--surface-2);
+  border-radius: 0 0 var(--radius) var(--radius); }
+.wiz-dsa { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.wiz-dsa input { accent-color: var(--accent); cursor: pointer; }
+.wiz-actions { display: inline-flex; gap: 8px; margin-left: auto; }
+
+@media (max-width: 600px) {
+  .wiz-reopen span { display: none; }
+  .wiz-overlay { padding: 14px; align-items: flex-start; }
+  .wiz-foot { justify-content: stretch; }
+  .wiz-actions { width: 100%; }
+  .wiz-actions .btn { flex: 1; }
+}

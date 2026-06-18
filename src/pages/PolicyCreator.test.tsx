@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import PolicyCreator from "./PolicyCreator";
+import {
+  setGlobalDismiss,
+  recordCompletedAccount,
+  loadWizardState,
+  qualifyingIndustries,
+} from "../lib/wizard";
+import { AEDLP_DATA } from "../data/library";
 
 afterEach(() => {
   cleanup();
@@ -26,6 +33,10 @@ function addByName(container: HTMLElement, name: string) {
 }
 
 describe("PolicyCreator page", () => {
+  // These exercises target the library / draft, not the front door, so suppress
+  // the wizard and land straight in the plain library — the pre-wizard default.
+  beforeEach(() => setGlobalDismiss(true));
+
   it("renders the topbar and the library", () => {
     const { container } = renderPage();
     expect(screen.getByText("AEDLP Policy Creator")).toBeTruthy();
@@ -159,5 +170,118 @@ describe("PolicyCreator page", () => {
     // It quietly offers to build a list; there is no "Use" action to load nothing.
     expect(screen.getByRole("link", { name: /enforcer export/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use" })).toBeNull();
+  });
+});
+
+/* The front door: no wizard suppression here, so the page makes its real
+   landing decision from localStorage on each render. */
+describe("PolicyCreator wizard front door", () => {
+  const industryFilter = (c: HTMLElement) =>
+    c.querySelector('select[aria-label="Filter by industry"]') as HTMLSelectElement;
+  const nameField = (c: HTMLElement) =>
+    c.querySelector(".policy-draft input.pf-input") as HTMLInputElement;
+  const descField = (c: HTMLElement) =>
+    c.querySelector(".policy-draft textarea.pf-input") as HTMLTextAreaElement;
+
+  function complete(container: HTMLElement, customer: string, industry: string) {
+    fireEvent.change(screen.getByPlaceholderText(/Globex Corporation/), { target: { value: customer } });
+    fireEvent.change(screen.getByLabelText("Industry"), { target: { value: industry } });
+    fireEvent.click(screen.getByRole("button", { name: /Start in Policy Creator/ }));
+    return container;
+  }
+
+  it("shows the wizard on first load (no saved state)", () => {
+    renderPage();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Set up a policy for a customer")).toBeTruthy();
+  });
+
+  it("Skip drops into the library unchanged — full library, no filter, no prefill", () => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.querySelectorAll(".lib-row").length).toBe(105);
+    expect(industryFilter(container).value).toBe("all");
+    expect(nameField(container).value).toBe("");
+    expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
+  });
+
+  it("offers only qualifying industries in the dropdown, derived from data", () => {
+    const { container } = renderPage();
+    const select = within(container.querySelector(".wiz")!).getByLabelText("Industry") as HTMLSelectElement;
+    const opts = [...select.options].map((o) => o.value).filter(Boolean);
+    expect(opts).toEqual(qualifyingIndustries());
+    expect(opts).toContain("Financial services"); // a pack industry
+    expect(opts).not.toContain("Cross-industry"); // the umbrella
+    expect(opts).not.toContain("Education"); // too few of its own detectors
+    opts.forEach((o) => expect(AEDLP_DATA.industries).toContain(o));
+  });
+
+  it("completing step one pre-filters the industry and pre-fills metadata, adding no conditions", () => {
+    const { container } = renderPage();
+    complete(container, "Globex", "Financial services");
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Industry pre-filter active (and clearable — it is a normal filter value).
+    expect(industryFilter(container).value).toBe("Financial services");
+    // Metadata pre-filled in the agreed format.
+    expect(nameField(container).value).toBe("Globex, Financial services DLP");
+    expect(descField(container).value).toBe("DLP policy for Globex (Financial services).");
+    const tagBox = container.querySelector(".tag-box")!;
+    expect(tagBox.textContent).toContain("globex");
+    expect(tagBox.textContent).toContain("financial-services");
+    // Nothing added to conditions.
+    expect(container.querySelector(".added-pill")?.textContent).toContain("0 in policy");
+    expect(container.querySelector(".cond-row")).toBeNull();
+  });
+
+  it("keeps the pre-filter clearable back to All industries (a pre-filter, not a lock)", () => {
+    const { container } = renderPage();
+    complete(container, "Globex", "Financial services");
+    fireEvent.change(industryFilter(container), { target: { value: "all" } });
+    expect(industryFilter(container).value).toBe("all");
+  });
+
+  it("keeps the pre-filled policy name when a detector is added afterwards", () => {
+    const { container } = renderPage();
+    complete(container, "Globex", "Financial services");
+    addByName(container, "AWS Access Key ID");
+    // The wizard's metadata is deliberate, so an add does not overwrite it.
+    expect(nameField(container).value).toBe("Globex, Financial services DLP");
+    expect(container.querySelector(".added-pill")?.textContent).toContain("1 in policy");
+  });
+
+  it("skips the wizard and reapplies the account on return", () => {
+    recordCompletedAccount({ customer: "Initech", industry: "Technology & SaaS" });
+    const { container } = renderPage();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(industryFilter(container).value).toBe("Technology & SaaS");
+    expect(nameField(container).value).toBe("Initech, Technology & SaaS DLP");
+  });
+
+  it("suppresses the wizard when the global don't-show-again preference is set", () => {
+    setGlobalDismiss(true);
+    const { container } = renderPage();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.querySelectorAll(".lib-row").length).toBe(105);
+    expect(industryFilter(container).value).toBe("all");
+  });
+
+  it("re-opens the wizard from the topbar control, clearing the global preference", () => {
+    setGlobalDismiss(true);
+    renderPage();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Customer setup/ }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(loadWizardState().globalDismiss).toBe(false);
+  });
+
+  it("falls back to showing the wizard when stored state is corrupt", () => {
+    localStorage.setItem("aedlp_wizard_last", "{ not json");
+    localStorage.setItem("aedlp_wizard_global_dismiss", "garbage");
+    renderPage();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 });

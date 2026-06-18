@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import PolicyCreator from "./PolicyCreator";
 import Extractor from "./Extractor";
+import { setGlobalDismiss } from "../lib/wizard";
+
+// Routing, not the front door — keep the wizard out of the way.
+beforeEach(() => setGlobalDismiss(true));
 
 afterEach(() => {
   cleanup();
