@@ -16,8 +16,8 @@ This is a planning and drafting aid, not the enforcement engine.
 - Payment card matching does not perform Luhn checksum validation, so it will over match.
 - The detector patterns are drafts. Review and tune them for your environment.
 - The seed library is example data only. It contains no real personal data, no real customer or
-  competitor domains, and no real credentials. The competitor list uses the reserved `.example` TLD
-  and must be replaced with your own list before use.
+  competitor domains, and no real credentials. Competitor domains are not shipped as a static list;
+  they are added at policy-build time via the Find-competitors lookup (see below).
 
 ## The two pages
 
