@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { zipSync, strToU8 } from "fflate";
-import { pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
-import { readSheetNamesStream, readSheetHeadersStream, parseWorkbookStream, selectSheet } from "./xlsx-stream";
+import { CSV_FALLBACK_MESSAGE, pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
+import {
+  readSheetNamesStream,
+  readSheetHeadersStream,
+  parseWorkbookStream,
+  selectSheet,
+  type StreamStats,
+} from "./xlsx-stream";
 import { parseWorkbookLegacy, readSheetNamesLegacy } from "./extract-legacy";
 
 const SAMPLE_XLSX = "handoff/aedlp-policy-creator/project/uploads/enforcer-simulated testnodata 2026-05-12.xlsx";
@@ -435,5 +441,74 @@ describe("multi-sheet workbook — selecting the sheet that actually holds the c
     await expect(selectSheet(file)).rejects.toThrow(
       /recipient email column.*multiple sheets \(breaches, high_level_statistics\)/,
     );
+  });
+});
+
+describe("memory guardrails & fast rejection (large / wrong-shape / too-large files)", () => {
+  it("rejects a LARGE wrong-shape sheet fast — bounded work, never scans the whole sheet", async () => {
+    // A big sheet whose header carries no email column and whose 20k data rows are
+    // not emails either. The old path kept parsing every row (denseRow on each) to
+    // the end — a ~minute hang on a 250MB file. Detection must give up after its
+    // scan window and stop, so only a couple dozen rows are ever examined.
+    const N = 20_000;
+    const parts: string[] = [`<row r="1">${inlineCell("A1", "col_one")}${inlineCell("B1", "col_two")}</row>`];
+    for (let i = 0; i < N; i++) {
+      const r = i + 2;
+      parts.push(`<row r="${r}">${inlineCell("A" + r, "ref-" + i)}${inlineCell("B" + r, "note")}</row>`);
+    }
+    const bytes = zipXlsx({ sheetName: "sheet", rowsXml: parts.join(""), level: 0 });
+
+    let stats: StreamStats | null = null;
+    await expect(
+      parseWorkbookStream(new File([bytes], "wrong-shape-huge.xlsx"), "sheet", {
+        onStats: (s) => {
+          stats = s;
+        },
+      }),
+    ).rejects.toThrow(/recipient email column.*Columns found: col_one, col_two/);
+
+    // The proof it did NOT hang: it examined only the header-scan window (~25 rows),
+    // not all 20,000, and accumulated nothing.
+    expect(stats).not.toBeNull();
+    const s = stats!;
+    expect(s.rowsExamined).toBeLessThan(50);
+    expect(s.rowsExamined).toBeLessThan(N / 100);
+    expect(s.scannedRows).toBe(0);
+  });
+
+  it("aborts with the CSV-fallback banner when the shared-strings table exceeds the memory ceiling", async () => {
+    // A workbook whose shared-strings table is larger than the (here, tiny) ceiling
+    // must abort BEFORE materialising it, with the friendly export-as-CSV banner —
+    // never an OOM.
+    const strings = Array.from({ length: 200 }, (_, i) => `shared-string-value-${i}-with-some-padding`);
+    const rowsXml = `<row r="1"><c r="A1" t="s"><v>0</v></c></row>`;
+    const bytes = zipXlsx({ sheetName: "unauthorised_contacts", rowsXml, sharedStrings: strings });
+    const file = new File([bytes], "huge-shared-strings.xlsx");
+
+    await expect(
+      parseWorkbookStream(file, "unauthorised_contacts", { limits: { maxMetaBytes: 1024 } }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+
+    // Under the real (large) default ceiling this small file is fine — it fails only
+    // for lack of an email column, NOT as a too-large error.
+    await expect(parseWorkbookStream(file, "unauthorised_contacts")).rejects.toThrow(/recipient email column/);
+  });
+
+  it("aborts with the CSV-fallback banner when a single row would grow the buffer past the ceiling", async () => {
+    // A pathological/malformed sheet with one enormous, never-closed <row>: the
+    // rolling buffer must not grow without bound — it aborts at the ceiling.
+    const big = "x".repeat(20_000);
+    const rowsXml = `<row r="1"><c r="A1" t="inlineStr"><is><t>${big}</t></is>`; // intentionally unclosed
+    const bytes = zipXlsx({ sheetName: "s", rowsXml });
+    await expect(
+      parseWorkbookStream(new File([bytes], "huge-row.xlsx"), "s", { limits: { maxRowBufferChars: 2000 } }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+  });
+
+  it("reports rows processed through onRows", async () => {
+    const seen: number[] = [];
+    await parseWorkbookStream(fileFromSample(), "unauthorised_contacts", { onRows: (n) => seen.push(n) });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toBeGreaterThanOrEqual(3); // header + 3 data rows examined
   });
 });

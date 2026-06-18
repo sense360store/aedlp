@@ -14,7 +14,7 @@ import { Callout } from "../components/ui/Callout";
 import { CopyButton } from "../components/ui/CopyButton";
 import { useTheme } from "../theme";
 import { loadTrustedDomains, saveTrustedDomains } from "../lib/trusted";
-import { isCSV, emailDomain, type ParsedResult } from "../lib/extract";
+import { isCSV, emailDomain, isTooLargeError, type ParsedResult } from "../lib/extract";
 import { parseFile } from "../lib/parseClient";
 
 function fmtBytes(n: number): string {
@@ -82,11 +82,18 @@ function Dropzone({ onFile, error }: { onFile: (f: File) => void; error: string 
           }}
         />
       </div>
-      {error && (
-        <Callout tone="warn" title="Couldn't read that file">
-          {error}
-        </Callout>
-      )}
+      {error &&
+        (isTooLargeError(error) ? (
+          // Not a failure — the file is just too big to hold in the browser; point
+          // the user at the flat-memory CSV path instead of an error wall.
+          <Callout tone="info" title="This file is too large to read in the browser">
+            {error}
+          </Callout>
+        ) : (
+          <Callout tone="warn" title="Couldn't read that file">
+            {error}
+          </Callout>
+        ))}
     </>
   );
 }
@@ -105,6 +112,7 @@ export default function Extractor() {
   const [error, setError] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
+  const [rows, setRows] = useState(0);
   const [parsed, setParsed] = useState<ParsedResult | null>(null);
   const [sheetChoice, setSheetChoice] = useState<{ names: string[] }>({ names: [] });
   // Domains restored from the shared store on mount (a prior extract or the
@@ -135,10 +143,11 @@ export default function Extractor() {
   const runParse = useCallback(async (f: File, sheetName?: string) => {
     setError("");
     setProgress(0);
+    setRows(0);
     setStage("parsing");
     setFile(f);
     try {
-      const outcome = await parseFile(f, { sheetName, onProgress: setProgress });
+      const outcome = await parseFile(f, { sheetName, onProgress: setProgress, onRows: setRows });
       // no obvious target sheet and several to choose from — let the user pick
       if (outcome.kind === "sheet") {
         setSheetChoice({ names: outcome.names });
@@ -309,6 +318,7 @@ export default function Extractor() {
                   <div style={{ fontSize: 12, color: "var(--text-3)" }}>
                     {file && isCSV(file) ? "Streaming rows locally" : "Streaming workbook locally"} ·{" "}
                     {fmtBytes(file?.size ?? 0)}
+                    {rows > 0 ? ` · ${rows.toLocaleString()} rows` : ""}
                   </div>
                   <div className="prog-track">
                     <div className="prog-bar" style={{ width: (progress * 100).toFixed(0) + "%" }}></div>

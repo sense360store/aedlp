@@ -13,6 +13,8 @@ export type ParseOutcome = { kind: "result"; result: ParsedResult } | { kind: "s
 export interface ParseOptions {
   sheetName?: string;
   onProgress?: (p: number) => void;
+  /** Live count of rows processed, for "N rows" streaming progress. */
+  onRows?: (rows: number) => void;
 }
 
 export function parseFile(file: File, opts: ParseOptions = {}): Promise<ParseOutcome> {
@@ -27,6 +29,7 @@ export function parseFile(file: File, opts: ParseOptions = {}): Promise<ParseOut
       switch (msg.kind) {
         case "progress":
           opts.onProgress?.(msg.p);
+          if (typeof msg.rows === "number") opts.onRows?.(msg.rows);
           break;
         case "sheet":
           finish(() => resolve({ kind: "sheet", names: msg.names }));
