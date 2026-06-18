@@ -275,7 +275,7 @@ export default function Extractor() {
           <div className="brand-mark">
             <Icon name="database" size={17} />
           </div>
-          <div>
+          <div className="brand-text">
             <div className="brand-title">Trusted Domain Extractor</div>
             <div className="brand-sub">AEDLP · unauthorised-email whitelist</div>
           </div>
