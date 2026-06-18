@@ -155,12 +155,39 @@ describe("parseWorkbookStream column/blank-row handling (inline strings)", () =>
     expect(res.typeTotals.get("freemail")).toBe(1);
   });
 
-  it("throws a clear error when the contact columns are absent", async () => {
+  it("throws a friendly error that lists the headers found when no email column exists", async () => {
     const rowsXml =
       `<row r="1">${inlineCell("A1", "alpha")}${inlineCell("B1", "beta")}</row>` +
-      `<row r="2">${inlineCell("A2", "x@y.com")}${inlineCell("B2", "z")}</row>`;
+      `<row r="2">${inlineCell("A2", "gamma")}${inlineCell("B2", "delta")}</row>`; // no emails anywhere
     const bytes = zipXlsx({ sheetName: "sheet", rowsXml });
-    await expect(parseWorkbookStream(new File([bytes], "bad.xlsx"), "sheet")).rejects.toThrow(/contact_type/);
+    await expect(parseWorkbookStream(new File([bytes], "bad.xlsx"), "sheet")).rejects.toThrow(
+      /recipient email column.*Columns found: alpha, beta/,
+    );
+  });
+});
+
+describe("parseWorkbookStream robust header detection (aliases + email-scan fallback)", () => {
+  it("matches aliased headers (recipient_address / contact_type) and reads the contact column", async () => {
+    const rowsXml =
+      `<row r="1">${inlineCell("A1", "recipient_address")}${inlineCell("B1", "contact_type")}</row>` +
+      `<row r="2">${inlineCell("A2", "partner@vendor.com")}${inlineCell("B2", "external")}</row>` +
+      `<row r="3">${inlineCell("A3", "jdoe@gmail.com")}${inlineCell("B3", "freemail")}</row>`;
+    const bytes = zipXlsx({ sheetName: "unauthorised_contacts", rowsXml });
+    const res = await parseWorkbookStream(new File([bytes], "aliased.xlsx"), "unauthorised_contacts");
+    expect([...res.map.keys()].sort()).toEqual(["gmail.com", "vendor.com"]);
+    expect(res.typeTotals.get("external")).toBe(1);
+    expect(trustedDomainsFromParsed(res)).toEqual(["vendor.com"]); // external default
+  });
+
+  it("falls back to the email-bearing column when the header is unrecognised", async () => {
+    const rowsXml =
+      `<row r="1">${inlineCell("A1", "col_one")}${inlineCell("B1", "col_two")}</row>` +
+      `<row r="2">${inlineCell("A2", "ref-001")}${inlineCell("B2", "partner@vendor.com")}</row>` +
+      `<row r="3">${inlineCell("A3", "ref-002")}${inlineCell("B3", "rep@vendor.com")}</row>`;
+    const bytes = zipXlsx({ sheetName: "sheet", rowsXml });
+    const res = await parseWorkbookStream(new File([bytes], "fallback.xlsx"), "sheet");
+    expect([...res.map.keys()]).toEqual(["vendor.com"]);
+    expect(res.map.get("vendor.com")?.total).toBe(2);
   });
 });
 

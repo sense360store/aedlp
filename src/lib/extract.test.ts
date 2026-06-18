@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   emailDomain,
   isCSV,
+  locateColumns,
   parseCSV,
   pickSheet,
   TARGET_SHEET,
@@ -69,10 +70,77 @@ describe("parseCSV (streaming)", () => {
     expect(progresses[progresses.length - 1]).toBe(1);
   });
 
-  it("throws when the header columns are missing", async () => {
-    const csv = "a,b,c\n1,2,3\n";
+  it("throws a friendly error that lists the headers found when there is no email column", async () => {
+    const csv = "a,b,c\n1,2,3\n"; // no column of email addresses anywhere
     const file = new File([csv], "bad.csv", { type: "text/csv" });
-    await expect(parseCSV(file)).rejects.toThrow(/contact_type/);
+    await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: a, b, c/);
+  });
+});
+
+describe("locateColumns — header alias matching", () => {
+  it("matches known aliases case-, whitespace- and separator-insensitively", () => {
+    expect(locateColumns(["User Address", " Contact Address ", "Contact Type"])).toEqual({ type: 2, addr: 1 });
+    expect(locateColumns(["recipient-address", "direction"])).toEqual({ type: 1, addr: 0 });
+    expect(locateColumns(["EMAIL"])).toEqual({ type: -1, addr: 0 }); // type column is optional
+  });
+  it("resolves the contact column, never the sender/user column, when both carry addresses", () => {
+    // user_ad is address-bearing too, but only contact_ad is a recipient alias.
+    expect(locateColumns(["user_ad", "contact_ad", "contact_type"])).toEqual({ type: 2, addr: 1 });
+  });
+  it("returns addr -1 for an address column it cannot name (the email-scan fallback then takes over)", () => {
+    expect(locateColumns(["from", "to", "note"]).addr).toBe(-1);
+  });
+});
+
+describe("parseCSV — robust column detection (real-world + aliased enforcer headers)", () => {
+  it("parses an export with the real enforcer headers (contact_ad / contact_type), using the contact column", async () => {
+    // The exact header row of the sample enforcer export's unauthorised_contacts sheet.
+    const csv = [
+      ",user_ad,contact_ad,user_name,contact_name,contact_type,explanation",
+      "0,me@corp.com,someone@hotmail.com,J Smith,person@hotmail.com,freemail,blank_subject",
+      "1,me2@corp.com,rep@soteria365.com,D Smith,person2@soteria365.com,external,low_ratio",
+    ].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    // Domains come from contact_ad (the external contact), never user_ad (our sender).
+    expect([...res.map.keys()].sort()).toEqual(["hotmail.com", "soteria365.com"]);
+    expect(res.map.has("corp.com")).toBe(false);
+    expect(trustedDomainsFromParsed(res)).toEqual(["soteria365.com"]); // external default
+  });
+
+  it("accepts aliased headers — 'Recipient Address' / 'Direction' with odd casing and spacing", async () => {
+    const csv = [
+      "Recipient Address,Direction",
+      "partner@vendor.com,external",
+      "rep@vendor.com,external", // same domain -> de-duped
+      "ally@trusted-partner.io,external",
+      "jdoe@gmail.com,freemail",
+    ].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    expect(trustedDomainsFromParsed(res)).toEqual(["trusted-partner.io", "vendor.com"]);
+  });
+
+  it("works with a single email column and no contact-type column at all", async () => {
+    const csv = ["email", "a@one.com", "b@two.com", "c@one.com"].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    expect([...res.map.keys()].sort()).toEqual(["one.com", "two.com"]);
+    // No type info -> the default selection keeps every extracted domain.
+    expect(trustedDomainsFromParsed(res).sort()).toEqual(["one.com", "two.com"]);
+  });
+
+  it("falls back to the email-looking column when no header alias matches", async () => {
+    const csv = ["id,who,blob", "1,partner@vendor.com,note", "2,rep@vendor.com,note", "3,not-an-email,note"].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    expect([...res.map.keys()]).toEqual(["vendor.com"]);
+    expect(res.map.get("vendor.com")?.total).toBe(2);
+  });
+
+  it("steers the fallback to the recipient column over the sender column when both hold emails", async () => {
+    // Neither header is a known alias, so the email-scan runs; the hint must steer
+    // it to the recipient column, not the sender one.
+    const csv = ["sender_box,recipient_box", "me@corp.com,partner@vendor.com", "me@corp.com,rep@vendor.com"].join("\n");
+    const res = await parseCSV(new File([csv], "export.csv", { type: "text/csv" }));
+    expect([...res.map.keys()]).toEqual(["vendor.com"]);
+    expect(res.map.has("corp.com")).toBe(false);
   });
 });
 
