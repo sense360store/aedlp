@@ -185,7 +185,12 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     if (valid1) setStep(2);
   };
   const skipWizard = () => onSkip(dontShowAgain);
-  // Step two: finish, carrying the extracted list only when we actually have one.
+  // Commit-timing contract for the trusted-domain list (see onWizardFinish):
+  // the list is handed up — and so persisted to the shared store — ONLY when the
+  // user finishes with "Start in Policy Creator" AND a file fully parsed into a
+  // non-empty list (stage "ready"). "Skip this step" (withList=false), and any
+  // half-finished state (parsing / sheet-pick / empty / error), hand up null and
+  // persist nothing. Close / Escape / backdrop route through onSkip, never here.
   const finish = (withList: boolean) => onFinish(account(), dontShowAgain, withList && stage === "ready" ? domains : null);
   const parsing = stage === "parsing";
 

@@ -36,6 +36,11 @@ Drop an enforcer export (`.xlsx`, `.xls`, or `.csv`) and the page parses it enti
 It reduces the external contacts to a clean, de duplicated list of email domains, lets you curate the
 ones you trust, and exports the result as text, JSON, or CSV.
 
+If a trusted-domain list has already been saved in this browser — by a previous visit here, or by the
+Customer setup wizard's optional upload (see "Handoff between the pages") — the page opens straight onto
+that list in the same curate UI for review and refinement, instead of an empty dropzone that would hide
+it. "Upload a file" starts over with a fresh export.
+
 ### Find competitors (Policy Creator)
 
 A "Find competitors" panel on the Policy Creator looks up a company's competitors and their primary
@@ -67,9 +72,24 @@ remain in the repo regardless of the flags.
 
 ### Handoff between the pages
 
-The extractor writes the curated whitelist to `localStorage` under the key `aedlp_trusted_domains`,
-so the Policy Creator can pick it up in the same browser. The theme choice is stored under
-`aedlp-theme`. These two keys are the only persistence the app uses.
+A curated trusted-domain whitelist is written to `localStorage` under the key `aedlp_trusted_domains`
+through one shared `saveTrustedDomains` util, from either of two surfaces: the Trusted Domain
+Extractor's explicit "Use in Policy Creator" handoff, or the Customer setup wizard's optional
+enforcer-export upload. Both write the same key and the same shape (a serialised `string[]`), so the
+origin never matters to a reader. Three readers pick it up in the same browser: the Policy Creator's
+trusted bar (and the recipient/unauthorised-email condition it loads), and the Trusted Domain Extractor
+page itself, which reads the key on mount so a wizard-saved list surfaces there for review and curation
+— not only in the Policy Creator.
+
+**When the wizard commits the list.** The wizard persists only when you finish with "Start in Policy
+Creator" *and* a file fully parsed into a non-empty list. "Skip this step", closing or escaping the
+wizard, and any half-finished or empty/unreadable upload write nothing — a skipped or abandoned setup
+never silently persists a partial list, and an empty parse never overwrites an existing one. The
+extractor page likewise only writes on the explicit "Use in Policy Creator" action; merely opening it
+on a restored list does not re-write the store.
+
+The theme choice is stored under `aedlp-theme`, and the wizard's own front-door state under
+`aedlp_wizard_*`. Those, plus `aedlp_trusted_domains`, are the only persistence the app uses.
 
 ## No backend, with one scoped exception
 
