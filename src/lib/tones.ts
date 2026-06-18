@@ -24,3 +24,7 @@ export function typeTone(t: string): string {
 export function typeShort(t: string): string {
   return (AEDLP_DATA.conditionTypes.find((c) => c.id === t) || { short: t }).short;
 }
+
+export function actionLabel(a: string): string {
+  return (AEDLP_DATA.actions as Record<string, { label: string }>)[a]?.label ?? a;
+}

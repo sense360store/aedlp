@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { Icon } from "../ui/Icon";
 import { CopyButton } from "../ui/CopyButton";
-import { typeTone, typeShort, riskTone } from "../../lib/tones";
+import { InfoTip } from "../ui/InfoTip";
+import { typeTone, typeShort, riskTone, actionLabel } from "../../lib/tones";
 import { conditionCopyValue } from "../../lib/match";
 import type { Detector } from "../../types";
 import { ContentPreview } from "./ContentPreview";
@@ -32,6 +33,13 @@ export function LibraryRow({ d, added, onToggle, onTest }: LibraryRowProps) {
           <div className="row-title-line">
             <span className="row-name">{d.displayName}</span>
             <span className={`type-pill ${typeTone(d.conditionType)}`}>{typeShort(d.conditionType)}</span>
+            {d.description.trim() && (
+              <InfoTip
+                text={d.description}
+                label={`About ${d.displayName}`}
+                meta={`FP risk: ${d.falsePositiveRisk} · ${actionLabel(d.recommendedAction)}`}
+              />
+            )}
           </div>
           <div className="row-sub">
             <span className="row-cat">{d.category}</span>
