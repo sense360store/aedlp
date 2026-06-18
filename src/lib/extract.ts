@@ -98,6 +98,26 @@ export interface Accumulator {
   result(): AccResult;
 }
 
+/* The friendly banner shown when a file is too large to process safely in the
+   browser (its shared-strings table or a single row would exhaust memory). CSV
+   streams line-by-line with flat memory, so that is the escape hatch we point
+   the user at. Kept as an exported constant so the UI can recognise this exact
+   message and present it as guidance rather than a hard "couldn't read" error. */
+export const CSV_FALLBACK_MESSAGE =
+  "This file is very large. Export just the unauthorised_contacts sheet as CSV and upload that.";
+
+/** The too-large guardrail error (see CSV_FALLBACK_MESSAGE). Thrown the moment a
+ *  memory ceiling is about to be crossed, so the tab can never OOM. */
+export function tooLargeError(): Error {
+  return new Error(CSV_FALLBACK_MESSAGE);
+}
+
+/** True when an error is the too-large guardrail (so the UI can show the calm
+ *  "export as CSV" guidance instead of a generic read failure). */
+export function isTooLargeError(err: unknown): boolean {
+  return err instanceof Error ? err.message === CSV_FALLBACK_MESSAGE : err === CSV_FALLBACK_MESSAGE;
+}
+
 export function norm(s: unknown): string {
   return String(s == null ? "" : s).trim().toLowerCase();
 }
@@ -190,12 +210,18 @@ export interface ResolvedColumns {
 export interface ColumnResolver {
   /** Feed one non-blank row of cells (indexed by column position). Returns the
    *  resolved columns the moment they are known — after which feed() must not be
-   *  called again — or null to keep feeding. */
+   *  called again — or null. A null result means EITHER "keep feeding" OR "given
+   *  up": call exhausted() to tell them apart so the caller can fail fast. */
   feed(cells: unknown[]): ResolvedColumns | null;
   /** Force a decision from whatever has been buffered, for when the stream ends
    *  before feed() resolved. Returns the columns, or null when no email column
    *  could be found at all (the caller then raises columnsNotFoundError). */
   finalize(): ResolvedColumns | null;
+  /** True once detection has given up within the bounded scan window — the email
+   *  column was not found in the first {@link HEADER_SCAN_LIMIT} non-blank rows.
+   *  The streaming readers consult this to fail fast (raise the banner) instead of
+   *  reading the rest of a wrong-shape file, which would OOM the tab. */
+  exhausted(): boolean;
   /** The non-empty header labels seen (the first non-blank buffered row), for the
    *  "columns found" banner when resolution fails. */
   foundHeaders(): string[];
@@ -214,7 +240,7 @@ const SENDER_HINT = /(^|_)(sender|user|internal|source|owner|from)(_|$)/;
 export function createColumnResolver(): ColumnResolver {
   const buffer: unknown[][] = [];
   let fed = 0;
-  let exhausted = false;
+  let scanExhausted = false;
 
   // the labels row = the first buffered row that has any non-empty cell
   const headerRow = (): unknown[] => buffer.find((r) => r.some((c) => String(c ?? "").trim() !== "")) ?? [];
@@ -249,20 +275,23 @@ export function createColumnResolver(): ColumnResolver {
 
   return {
     feed(cells) {
-      if (exhausted) return null;
+      if (scanExhausted) return null;
       const loc = locateColumns(cells);
       if (loc.addr >= 0) return { type: loc.type, addr: loc.addr, replay: [] }; // alias hit on this header row
       buffer.push(cells);
       if (++fed >= HEADER_SCAN_LIMIT) {
-        exhausted = true;
+        scanExhausted = true;
         return fallback();
       }
       return null;
     },
     finalize() {
-      if (exhausted) return null;
-      exhausted = true;
+      if (scanExhausted) return null;
+      scanExhausted = true;
       return fallback();
+    },
+    exhausted() {
+      return scanExhausted;
     },
     foundHeaders() {
       return headerRow()
@@ -316,13 +345,23 @@ function splitCSVLine(line: string): string[] {
   return out;
 }
 
-export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Promise<ParsedResult> {
+export async function parseCSV(
+  file: Blob,
+  onProgress?: (p: number) => void,
+  onRows?: (rows: number) => void,
+): Promise<ParsedResult> {
   const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
   const acc = makeAccumulator();
   const resolver = createColumnResolver();
   let buf = "";
   let cols: Columns | null = null;
+  // Set once the header scan window closes without finding an email column: there
+  // is nothing left to find, so stop reading instead of scanning the whole file
+  // (the bound that makes a wrong-shape file reject fast even at hundreds of MB).
+  let aborted = false;
   let read = 0;
+  let rowsSeen = 0; // data lines processed once the header is known (for row progress)
+  let reported = 0;
   const total = file.size || 0;
   const addRow = (cells: unknown[]) => acc.add(cols!.type >= 0 ? cells[cols!.type] : "", cells[cols!.addr]);
   const apply = (r: ResolvedColumns) => {
@@ -330,14 +369,18 @@ export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Pr
     for (const row of r.replay) addRow(row); // data rows the resolver buffered while detecting
   };
   const handle = (line: string) => {
-    if (line === "") return;
+    if (line === "" || aborted) return;
     const cells = splitCSVLine(line);
     if (!cols) {
       const r = resolver.feed(cells);
       if (r) apply(r);
+      // No email column within the bounded scan window: stop now instead of
+      // reading the rest of a wrong-shape file (fail fast to the banner).
+      else if (resolver.exhausted()) aborted = true;
       // else: not the header yet (or stray line) — keep scanning
       return;
     }
+    rowsSeen++;
     addRow(cells);
   };
   for (;;) {
@@ -346,25 +389,33 @@ export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Pr
       read += value.length;
       buf += value;
       let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
+      while (!aborted && (nl = buf.indexOf("\n")) >= 0) {
         let line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (line.endsWith("\r")) line = line.slice(0, -1);
         handle(line);
       }
       if (total) onProgress?.(Math.min(0.99, read / total));
+      if (onRows && rowsSeen - reported >= 2048) {
+        reported = rowsSeen;
+        onRows(rowsSeen);
+      }
     }
-    if (done) {
-      if (buf.trim()) handle(buf.replace(/\r$/, ""));
+    if (done || aborted) {
+      if (done && !aborted && buf.trim()) handle(buf.replace(/\r$/, ""));
       break;
     }
   }
+  if (aborted) await reader.cancel().catch(() => {});
   if (!cols) {
+    // finalize() returns null once the resolver is exhausted (incl. the fail-fast
+    // abort), so a wrong-shape file raises the banner here either way.
     const r = resolver.finalize();
     if (r) apply(r);
     else throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
   }
   onProgress?.(1);
+  onRows?.(rowsSeen);
   const r = acc.result();
   return { ...r, sheetName: "(csv)", sheetNames: ["(csv)"] };
 }

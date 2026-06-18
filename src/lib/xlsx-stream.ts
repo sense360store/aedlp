@@ -26,10 +26,41 @@ import {
   createColumnResolver,
   isUnauthSheetName,
   makeAccumulator,
+  tooLargeError,
   type ParsedResult,
   type ResolvedColumns,
   type SheetHeader,
 } from "./extract";
+
+/* ---------------- memory guardrails ----------------
+   The sheet rows stream with bounded memory (one decompression chunk + the
+   running domain set), but two things in a workbook are NOT inherently bounded
+   and could still OOM the tab on a pathological/huge file:
+     • the shared-strings table, which every reader must materialise to resolve
+       string cells — a 250 MB workbook can carry a very large one;
+     • a single worksheet row, if the XML is malformed and never closes a <row>.
+   We cap both. Crossing a cap means "streaming is not viable for this file": we
+   abort BEFORE exhausting memory and surface the CSV-fallback banner (CSV streams
+   line-by-line with flat memory). The caps are overridable so tests can trip them
+   with small fixtures. */
+export interface StreamLimits {
+  /** Max decompressed bytes for a single metadata entry — in practice the
+   *  shared-strings table. Beyond this we abort with the CSV-fallback banner. */
+  maxMetaBytes: number;
+  /** Max chars allowed to accumulate in the rolling row buffer (i.e. the size of
+   *  one worksheet row). A row larger than this is pathological; abort rather than
+   *  let the buffer grow unbounded. */
+  maxRowBufferChars: number;
+}
+
+export const DEFAULT_LIMITS: StreamLimits = {
+  maxMetaBytes: 256 * 1024 * 1024, // 256 MB of shared-strings text
+  maxRowBufferChars: 16 * 1024 * 1024, // ~16M chars for a single row
+};
+
+function resolveLimits(limits?: Partial<StreamLimits>): StreamLimits {
+  return { ...DEFAULT_LIMITS, ...limits };
+}
 
 const WORKBOOK_PATH = "xl/workbook.xml";
 const WORKBOOK_RELS_PATH = "xl/_rels/workbook.xml.rels";
@@ -38,6 +69,13 @@ const SHARED_STRINGS_RE = /(^|\/)sharedStrings\.xml$/i;
 // Read the source file in modest slices so we never hold the whole
 // compressed file at once and so decompression output stays chunked.
 const READ_CHUNK = 256 * 1024;
+
+// Absolute upper bound on rows examined before the contact columns resolve. A
+// well-formed export resolves on its header row, so this only ever trips on a
+// malformed/wrong-shape file (e.g. a huge run of blank rows ahead of any header):
+// it bounds the work so such a file fails fast to the banner instead of streaming
+// in full and exhausting the tab.
+const MAX_UNRESOLVED_ROWS = 50_000;
 
 /* ---------------- low-level zip streaming ---------------- */
 interface StreamZipOptions {
@@ -91,14 +129,18 @@ async function streamZip(
   if (captured) throw captured;
 }
 
-// Collect the (small) entries matched by `want` into decoded strings.
+// Collect the (small) entries matched by `want` into decoded strings. A single
+// entry exceeding `maxEntryBytes` (decompressed) trips the too-large guardrail —
+// this is what stops a giant shared-strings table from exhausting memory.
 async function readEntries(
   file: Blob,
   want: (name: string) => boolean,
   stopWhen?: (done: Set<string>) => boolean,
   onRead?: (bytesRead: number) => void,
+  maxEntryBytes = Infinity,
 ): Promise<Map<string, string>> {
   const buffers = new Map<string, Uint8Array[]>();
+  const sizes = new Map<string, number>();
   const done = new Set<string>();
   await streamZip(
     file,
@@ -109,7 +151,12 @@ async function readEntries(
         arr = [];
         buffers.set(name, arr);
       }
-      if (chunk.length) arr.push(chunk);
+      if (chunk.length) {
+        const size = (sizes.get(name) || 0) + chunk.length;
+        if (size > maxEntryBytes) throw tooLargeError(); // abort before materialising it
+        sizes.set(name, size);
+        arr.push(chunk);
+      }
       if (final) done.add(name);
     },
     { onRead, shouldStop: stopWhen ? () => stopWhen(done) : undefined },
@@ -254,12 +301,17 @@ function parseCells(rowXml: string, strings: string[], wantA = -1, wantB = -1): 
   const onlyTwo = wantA >= 0 || wantB >= 0;
   const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
   let m: RegExpExecArray | null;
+  // Cells normally carry an r="B1" reference giving their absolute column. Some
+  // exporters omit it, so fall back to positional order (the running column),
+  // resyncing whenever an explicit reference does appear. Without this, a header
+  // whose cells lack r="" parsed to an empty map — the "Columns found: 0" bug.
+  let autoCol = 0;
   while ((m = cellRe.exec(rowXml))) {
     const attrs = m[1];
     const inner = m[2];
     const refM = /(?:^|\s)r="([A-Z]+)\d+"/.exec(attrs);
-    if (!refM) continue;
-    const col = colIndexFromRef(refM[1]);
+    const col = refM ? colIndexFromRef(refM[1]) : autoCol;
+    autoCol = col + 1;
     if (onlyTwo && col !== wantA && col !== wantB) continue;
     out.set(col, inner === undefined ? "" : cellText(attrs, inner, strings));
   }
@@ -288,12 +340,17 @@ interface WorkbookMeta {
 // Read and parse only the small metadata entries (workbook.xml, its rels, and the
 // shared strings) — never a sheet. Shared by the sheet-name lister, the header
 // scanner and the full streaming parser so they agree on names/paths/strings.
-async function readWorkbookMeta(file: Blob, onRead?: (bytesRead: number) => void): Promise<WorkbookMeta> {
+async function readWorkbookMeta(
+  file: Blob,
+  onRead?: (bytesRead: number) => void,
+  maxMetaBytes?: number,
+): Promise<WorkbookMeta> {
   const meta = await readEntries(
     file,
     (n) => n === WORKBOOK_PATH || n === WORKBOOK_RELS_PATH || SHARED_STRINGS_RE.test(n),
     undefined,
     onRead,
+    maxMetaBytes,
   );
   const wbXml = meta.get(WORKBOOK_PATH);
   const relsXml = meta.get(WORKBOOK_RELS_PATH);
@@ -366,8 +423,8 @@ export async function readSheetNamesStream(file: Blob): Promise<{ names: string[
 
 // Read the header row of every sheet, in workbook order. Used to locate the
 // contact sheet by its columns when a name match is unavailable.
-export async function readSheetHeadersStream(file: Blob): Promise<SheetHeader[]> {
-  const meta = await readWorkbookMeta(file);
+export async function readSheetHeadersStream(file: Blob, limits?: Partial<StreamLimits>): Promise<SheetHeader[]> {
+  const meta = await readWorkbookMeta(file, undefined, resolveLimits(limits).maxMetaBytes);
   const out: SheetHeader[] = [];
   for (const name of meta.names) {
     const path = sheetPathFor(meta, name);
@@ -390,14 +447,18 @@ export async function readSheetHeadersStream(file: Blob): Promise<SheetHeader[]>
  * the sheets found and the best-guess sheet's headers, rather than silently
  * scanning the wrong sheet.
  */
-export async function selectSheet(file: Blob, override?: string): Promise<{ target: string; names: string[] }> {
+export async function selectSheet(
+  file: Blob,
+  override?: string,
+  limits?: Partial<StreamLimits>,
+): Promise<{ target: string; names: string[] }> {
   const { names } = await readSheetNamesStream(file);
   if (override) return { target: override, names };
   const named = names.find(isUnauthSheetName);
   if (named) return { target: named, names };
   if (names.length === 1) return { target: names[0], names };
 
-  const headers = await readSheetHeadersStream(file);
+  const headers = await readSheetHeadersStream(file, limits);
   const { chosen, bestGuess } = chooseSheetByHeaders(headers);
   if (chosen) return { target: chosen, names };
 
@@ -410,14 +471,20 @@ export interface StreamStats {
   scannedRows: number;
   maxBufferChars: number; // peak chars held in the rolling row buffer
   sheetBytes: number; // total decompressed bytes of the target sheet
+  rowsExamined: number; // rows looked at, incl. the header-detection window (bounds proof)
 }
 
 export interface WorkbookStreamOptions {
   onProgress?: (p: number) => void;
+  /** Live row count as the sheet streams, for "N rows processed" progress. */
+  onRows?: (rows: number) => void;
   onStats?: (stats: StreamStats) => void;
   /** All sheet names in the workbook, listed in the failure banner so a user of a
    *  multi-sheet file sees every sheet that was present. */
   allSheetNames?: string[];
+  /** Override the memory guardrails (defaults to DEFAULT_LIMITS). Mainly for tests
+   *  that trip a cap with a small fixture. */
+  limits?: Partial<StreamLimits>;
 }
 
 export async function parseWorkbookStream(
@@ -425,13 +492,20 @@ export async function parseWorkbookStream(
   sheetName: string,
   options: WorkbookStreamOptions = {},
 ): Promise<ParsedResult> {
-  const { onProgress, onStats, allSheetNames } = options;
+  const { onProgress, onRows, onStats, allSheetNames } = options;
+  const limits = resolveLimits(options.limits);
   const size = file.size || 0;
 
   // ---- pass 1: workbook metadata + shared strings (small entries only) ----
-  const meta = await readWorkbookMeta(file, (read) => {
-    if (size) onProgress?.(Math.min(0.49, read / (size * 2)));
-  });
+  // The shared-strings cap here is the main OOM guard: a huge table aborts with
+  // the CSV-fallback banner before it is ever fully held in memory.
+  const meta = await readWorkbookMeta(
+    file,
+    (read) => {
+      if (size) onProgress?.(Math.min(0.49, read / (size * 2)));
+    },
+    limits.maxMetaBytes,
+  );
   const sheetPath = sheetPathFor(meta, sheetName);
   if (!sheetPath) throw new Error('Sheet "' + sheetName + '" could not be read.');
   const sharedStrings = meta.sharedStrings;
@@ -446,7 +520,15 @@ export async function parseWorkbookStream(
   let colAddr = -1;
   let maxBufferChars = 0;
   let sheetBytes = 0;
+  let rowsExamined = 0;
+  let reported = 0;
   let sheetDone = false;
+  // Set when detection exhausts its scan window without finding an address column.
+  // We then stop immediately instead of parsing every remaining row of a huge
+  // sheet — the bound that turns a wrong-shape file's ~minute hang into an
+  // instant, friendly rejection.
+  let aborted = false;
+  let unresolvedRows = 0; // rows examined before the columns resolved (bounded)
   const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
 
   const apply = (r: ResolvedColumns) => {
@@ -459,13 +541,27 @@ export async function parseWorkbookStream(
   };
 
   const handleRow = (rowXml: string, body: string | undefined) => {
+    rowsExamined++;
     // A row is "blank" (and never counted) unless it holds a value cell, which
     // mirrors SheetJS's blankrows:false behaviour the old path relied on.
     const nonBlank = body !== undefined && (body.indexOf("<v>") >= 0 || body.indexOf("<is>") >= 0);
     if (!resolved) {
+      // Bound the header search: a malformed/huge file with no detectable header
+      // must not stream unbounded (counts blank rows too, to catch a giant blank
+      // prefix). A well-formed export resolves on row 1, long before this trips.
+      if (++unresolvedRows > MAX_UNRESOLVED_ROWS) {
+        aborted = true;
+        return;
+      }
       if (!nonBlank) return;
       const r = resolver.feed(denseRow(rowXml, sharedStrings));
-      if (r) apply(r);
+      if (r) {
+        apply(r);
+        return;
+      }
+      // Detection has given up within the bounded scan window: stop now instead of
+      // streaming the rest of a wrong-shape file (this is the OOM / ~59s guard).
+      if (resolver.exhausted()) aborted = true;
       return;
     }
     if (!nonBlank) return; // blank data row -> not scanned
@@ -474,7 +570,7 @@ export async function parseWorkbookStream(
   };
 
   const feed = (text: string) => {
-    if (!text) return;
+    if (!text || aborted) return;
     buffer += text;
     // peak resident buffer = the just-appended chunk plus any partial-row tail
     // carried over; this never grows with the row count because every complete
@@ -486,14 +582,24 @@ export async function parseWorkbookStream(
     while ((m = rowRe.exec(buffer))) {
       handleRow(m[0], m[1]);
       consumed = rowRe.lastIndex;
+      if (aborted) break; // stop draining the moment detection gives up
     }
     if (consumed > 0) buffer = buffer.slice(consumed);
+    // A single row larger than the cap means a malformed/pathological sheet; abort
+    // before the buffer grows without bound. (After draining, `buffer` holds only
+    // the still-incomplete trailing row.)
+    if (buffer.length > limits.maxRowBufferChars) throw tooLargeError();
+    if (onRows && rowsExamined - reported >= 2048) {
+      reported = rowsExamined;
+      onRows(rowsExamined);
+    }
   };
 
   await streamZip(
     file,
     (n) => n === sheetPath,
     (_name, chunk, final) => {
+      if (aborted) return;
       sheetBytes += chunk.length;
       feed(decoder.decode(chunk, { stream: !final }));
       if (final) sheetDone = true;
@@ -502,17 +608,25 @@ export async function parseWorkbookStream(
       onRead: (read) => {
         if (size) onProgress?.(Math.min(0.99, 0.5 + read / (size * 2)));
       },
-      shouldStop: () => sheetDone,
+      shouldStop: () => sheetDone || aborted,
     },
   );
 
   if (!resolved) {
-    const r = resolver.finalize();
+    // finalize() succeeds only if the email-scan fallback found a column within the
+    // bounded buffer; on the fail-fast abort (or a genuine miss) raise the banner.
+    const r = aborted ? null : resolver.finalize();
     if (r) apply(r);
-    else throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
+    else {
+      // Report the (bounded) work done even on the failure path, so callers and
+      // tests can confirm only a small prefix of a wrong-shape file was ever read.
+      onStats?.({ scannedRows: 0, maxBufferChars, sheetBytes, rowsExamined });
+      throw columnsNotFoundError(resolver.foundHeaders(), "sheet", allSheetNames);
+    }
   }
   onProgress?.(1);
   const r = acc.result();
-  onStats?.({ scannedRows: r.scanned, maxBufferChars, sheetBytes });
+  onRows?.(rowsExamined);
+  onStats?.({ scannedRows: r.scanned, maxBufferChars, sheetBytes, rowsExamined });
   return { ...r, sheetName };
 }

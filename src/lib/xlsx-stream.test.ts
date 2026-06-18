@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { zipSync, strToU8 } from "fflate";
-import { pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
-import { readSheetNamesStream, readSheetHeadersStream, parseWorkbookStream, selectSheet } from "./xlsx-stream";
+import { CSV_FALLBACK_MESSAGE, pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
+import {
+  readSheetNamesStream,
+  readSheetHeadersStream,
+  parseWorkbookStream,
+  selectSheet,
+  type StreamStats,
+} from "./xlsx-stream";
 import { parseWorkbookLegacy, readSheetNamesLegacy } from "./extract-legacy";
 
 const SAMPLE_XLSX = "handoff/aedlp-policy-creator/project/uploads/enforcer-simulated testnodata 2026-05-12.xlsx";
@@ -232,6 +238,67 @@ describe("parseWorkbookStream robust header detection (aliases + email-scan fall
   });
 });
 
+describe("parseWorkbookStream — cells without an r= reference (positional fallback)", () => {
+  // Some enforcer exports write cells with no r="B1" column reference. The reader
+  // must then fall back to positional order; previously every such cell was
+  // dropped, so the header parsed to nothing — the "Columns found: 0" bug. Mirrors
+  // the real unauthorised_contacts header: a leading unnamed/index column, then the
+  // six labels, with a couple of data rows carrying the index in the first column.
+  const noRef = (text: string) => `<c t="inlineStr"><is><t>${text}</t></is></c>`;
+  const noRefNum = (n: number) => `<c><v>${n}</v></c>`;
+  const blankCell = `<c/>`; // the leading unnamed index column (empty, no ref)
+
+  const rowsXml =
+    `<row r="1">${blankCell}${noRef("user_ad")}${noRef("contact_ad")}${noRef("user_name")}${noRef("contact_name")}${noRef("contact_type")}${noRef("explanation")}</row>` +
+    `<row r="2">${noRefNum(0)}${noRef("me@corp.com")}${noRef("partner@vendor.com")}${noRef("Me")}${noRef("Partner")}${noRef("external")}${noRef("note")}</row>` +
+    `<row r="3">${noRefNum(1)}${noRef("me@corp.com")}${noRef("jdoe@gmail.com")}${noRef("Me")}${noRef("J")}${noRef("freemail")}${noRef("note")}</row>`;
+
+  it("reads contact_ad from a header whose cells omit r= (leading blank column preserved)", async () => {
+    const bytes = zipXlsx({ sheetName: "unauthorised_contacts", rowsXml });
+    const res = await parseWorkbookStream(new File([bytes], "norefs.xlsx"), "unauthorised_contacts");
+    expect(res.scanned).toBe(2);
+    // domains come from contact_ad (col 2), never user_ad (col 1 → corp.com)
+    expect([...res.map.keys()].sort()).toEqual(["gmail.com", "vendor.com"]);
+    expect(res.map.has("corp.com")).toBe(false);
+    expect(res.typeTotals.get("external")).toBe(1);
+    expect(res.typeTotals.get("freemail")).toBe(1);
+    expect(trustedDomainsFromParsed(res)).toEqual(["vendor.com"]); // external default
+  });
+});
+
+describe("parseWorkbookStream — fail fast on a wrong-shape file (never OOM / hang)", () => {
+  it("rejects a multi-MB no-email sheet after reading only a bounded prefix", async () => {
+    // ~6 MB sheet, tens of thousands of rows, with NO email column anywhere. The
+    // reader must give up within the header-scan window and STOP — not stream the
+    // whole file, which is the bug (~59s + an out-of-memory tab crash).
+    const N = 60_000;
+    const parts: string[] = [`<row r="1">${inlineCell("A1", "alpha")}${inlineCell("B1", "beta")}</row>`];
+    for (let i = 0; i < N; i++) {
+      const r = i + 2;
+      parts.push(`<row r="${r}">${inlineCell("A" + r, "val" + i)}${inlineCell("B" + r, "x" + i)}</row>`);
+    }
+    // STORED (level 0) so the decompressed sheet really is multi-MB on disk.
+    const bytes = zipXlsx({ sheetName: "sheet", rowsXml: parts.join(""), level: 0 });
+    expect(bytes.length).toBeGreaterThan(4_000_000);
+
+    let sheetBytes = -1;
+    const t0 = Date.now();
+    await expect(
+      parseWorkbookStream(new File([bytes], "wrong.xlsx"), "sheet", { onStats: (s) => (sheetBytes = s.sheetBytes) }),
+    ).rejects.toThrow(/recipient email column.*Columns found: alpha, beta/);
+    const elapsed = Date.now() - t0;
+
+    // Bounded work (deterministic): onStats fired on the failure path, and only a
+    // small prefix of the multi-MB sheet was ever decompressed before bailing out.
+    expect(sheetBytes).toBeGreaterThanOrEqual(0); // stats reported even on the throw
+    expect(sheetBytes).toBeLessThan(2_000_000);
+    expect(sheetBytes * 3).toBeLessThan(bytes.length);
+    // And it did not hang (generous ceiling — the bug took ~59s; bounded work above
+    // is the real proof, this just guards against a regression to streaming in full).
+    expect(elapsed).toBeLessThan(5_000);
+  });
+});
+
 describe("parseWorkbookStream on a very large workbook", () => {
   it("aggregates hundreds of thousands of rows with bounded peak memory (never materialises the row set)", async () => {
     const N = 250_000;
@@ -374,5 +441,74 @@ describe("multi-sheet workbook — selecting the sheet that actually holds the c
     await expect(selectSheet(file)).rejects.toThrow(
       /recipient email column.*multiple sheets \(breaches, high_level_statistics\)/,
     );
+  });
+});
+
+describe("memory guardrails & fast rejection (large / wrong-shape / too-large files)", () => {
+  it("rejects a LARGE wrong-shape sheet fast — bounded work, never scans the whole sheet", async () => {
+    // A big sheet whose header carries no email column and whose 20k data rows are
+    // not emails either. The old path kept parsing every row (denseRow on each) to
+    // the end — a ~minute hang on a 250MB file. Detection must give up after its
+    // scan window and stop, so only a couple dozen rows are ever examined.
+    const N = 20_000;
+    const parts: string[] = [`<row r="1">${inlineCell("A1", "col_one")}${inlineCell("B1", "col_two")}</row>`];
+    for (let i = 0; i < N; i++) {
+      const r = i + 2;
+      parts.push(`<row r="${r}">${inlineCell("A" + r, "ref-" + i)}${inlineCell("B" + r, "note")}</row>`);
+    }
+    const bytes = zipXlsx({ sheetName: "sheet", rowsXml: parts.join(""), level: 0 });
+
+    let stats: StreamStats | null = null;
+    await expect(
+      parseWorkbookStream(new File([bytes], "wrong-shape-huge.xlsx"), "sheet", {
+        onStats: (s) => {
+          stats = s;
+        },
+      }),
+    ).rejects.toThrow(/recipient email column.*Columns found: col_one, col_two/);
+
+    // The proof it did NOT hang: it examined only the header-scan window (~25 rows),
+    // not all 20,000, and accumulated nothing.
+    expect(stats).not.toBeNull();
+    const s = stats!;
+    expect(s.rowsExamined).toBeLessThan(50);
+    expect(s.rowsExamined).toBeLessThan(N / 100);
+    expect(s.scannedRows).toBe(0);
+  });
+
+  it("aborts with the CSV-fallback banner when the shared-strings table exceeds the memory ceiling", async () => {
+    // A workbook whose shared-strings table is larger than the (here, tiny) ceiling
+    // must abort BEFORE materialising it, with the friendly export-as-CSV banner —
+    // never an OOM.
+    const strings = Array.from({ length: 200 }, (_, i) => `shared-string-value-${i}-with-some-padding`);
+    const rowsXml = `<row r="1"><c r="A1" t="s"><v>0</v></c></row>`;
+    const bytes = zipXlsx({ sheetName: "unauthorised_contacts", rowsXml, sharedStrings: strings });
+    const file = new File([bytes], "huge-shared-strings.xlsx");
+
+    await expect(
+      parseWorkbookStream(file, "unauthorised_contacts", { limits: { maxMetaBytes: 1024 } }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+
+    // Under the real (large) default ceiling this small file is fine — it fails only
+    // for lack of an email column, NOT as a too-large error.
+    await expect(parseWorkbookStream(file, "unauthorised_contacts")).rejects.toThrow(/recipient email column/);
+  });
+
+  it("aborts with the CSV-fallback banner when a single row would grow the buffer past the ceiling", async () => {
+    // A pathological/malformed sheet with one enormous, never-closed <row>: the
+    // rolling buffer must not grow without bound — it aborts at the ceiling.
+    const big = "x".repeat(20_000);
+    const rowsXml = `<row r="1"><c r="A1" t="inlineStr"><is><t>${big}</t></is>`; // intentionally unclosed
+    const bytes = zipXlsx({ sheetName: "s", rowsXml });
+    await expect(
+      parseWorkbookStream(new File([bytes], "huge-row.xlsx"), "s", { limits: { maxRowBufferChars: 2000 } }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+  });
+
+  it("reports rows processed through onRows", async () => {
+    const seen: number[] = [];
+    await parseWorkbookStream(fileFromSample(), "unauthorised_contacts", { onRows: (n) => seen.push(n) });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toBeGreaterThanOrEqual(3); // header + 3 data rows examined
   });
 });

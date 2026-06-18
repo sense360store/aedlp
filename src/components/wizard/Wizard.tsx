@@ -47,7 +47,7 @@ import { Icon } from "../ui/Icon";
 import { Badge } from "../ui/Badge";
 import { Callout } from "../ui/Callout";
 import { parseFile } from "../../lib/parseClient";
-import { isCSV, trustedDomainsFromParsed } from "../../lib/extract";
+import { isCSV, isTooLargeError, trustedDomainsFromParsed } from "../../lib/extract";
 import { fetchCompetitors, type CompetitorSuggestion } from "../../lib/competitors";
 import { CompetitorResultList } from "../competitors/CompetitorResultList";
 import type { WizardAccount } from "../../lib/wizard";
@@ -105,6 +105,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
   // Step-two upload state (the trusted ALLOW-LIST section).
   const [stage, setStage] = useState<UploadStage>("idle");
   const [progress, setProgress] = useState(0);
+  const [rows, setRows] = useState(0);
   const [fileName, setFileName] = useState("");
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -153,6 +154,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     setDontShowAgain(false);
     setStage("idle");
     setProgress(0);
+    setRows(0);
     setFileName("");
     setSheetNames([]);
     setPendingFile(null);
@@ -198,11 +200,16 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     const token = ++parseToken.current;
     setErrorMsg("");
     setProgress(0);
+    setRows(0);
     setFileName(f.name);
     setPendingFile(f);
     setStage("parsing");
     try {
-      const outcome = await parseFile(f, { sheetName, onProgress: (p) => token === parseToken.current && setProgress(p) });
+      const outcome = await parseFile(f, {
+        sheetName,
+        onProgress: (p) => token === parseToken.current && setProgress(p),
+        onRows: (n) => token === parseToken.current && setRows(n),
+      });
       if (token !== parseToken.current) return; // superseded (reopened / replaced)
       if (outcome.kind === "sheet") {
         setSheetNames(outcome.names);
@@ -284,6 +291,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
     parseToken.current++;
     setStage("idle");
     setProgress(0);
+    setRows(0);
     setFileName("");
     setSheetNames([]);
     setPendingFile(null);
@@ -437,8 +445,8 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>Reading {fileName}…</div>
                   <div style={{ fontSize: 12, color: "var(--text-3)" }}>
-                    {pendingFile && isCSV(pendingFile) ? "Streaming rows locally" : "Streaming workbook locally"} ·
-                    nothing is uploaded
+                    {pendingFile && isCSV(pendingFile) ? "Streaming rows locally" : "Streaming workbook locally"}
+                    {rows > 0 ? ` · ${rows.toLocaleString()} rows` : ""} · nothing is uploaded
                   </div>
                   <div className="prog-track">
                     <div className="prog-bar" style={{ width: (progress * 100).toFixed(0) + "%" }}></div>
@@ -504,7 +512,9 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                   <span>
                     {stage === "empty"
                       ? "No usable trusted domains were found in that file."
-                      : `Couldn’t read that file${errorMsg ? `: ${errorMsg}` : "."}`}{" "}
+                      : isTooLargeError(errorMsg)
+                        ? errorMsg // already a friendly "export as CSV" suggestion
+                        : `Couldn’t read that file${errorMsg ? `: ${errorMsg}` : "."}`}{" "}
                     You can continue without a trusted list, or try another file.
                   </span>
                 </div>
