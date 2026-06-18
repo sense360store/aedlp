@@ -23,7 +23,8 @@ export interface LibraryPanelProps {
   total: number;
   addedIds: Set<string>;
   onToggle: (d: Detector) => void;
-  onTest: (d: Detector) => void;
+  /** Per-row "Test this" entry point. Omitted (test panel hidden) → no button. */
+  onTest?: (d: Detector) => void;
   /** Curate AI-looked-up competitor domains into a recipient-domain condition. */
   onAddCompetitors?: (domains: string[]) => void;
 }

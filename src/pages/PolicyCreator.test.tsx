@@ -63,45 +63,57 @@ describe("PolicyCreator page", () => {
     expect(within(namePf).getByText("Suggestion")).toBeTruthy();
   });
 
-  it("computes the policy verdict and flips it between ANY and ALL", () => {
+  it("flips the AND/OR logic from the draft while the test panel is hidden", () => {
     const { container } = renderPage();
-    addByName(container, "AWS Access Key ID"); // matches the leaked-credentials sample
-    addByName(container, "UK IBAN"); // does not
-    fireEvent.click(screen.getByRole("button", { name: "Leaked credentials" }));
+    addByName(container, "AWS Access Key ID");
+    addByName(container, "UK IBAN");
 
-    const verdict = () => container.querySelector(".test-panel .badge")?.textContent ?? "";
-    // default operator is OR (ANY) -> triggers, 1 of 2
-    expect(verdict()).toContain("Policy triggers");
-    expect(verdict()).toContain("1/2");
-
+    // The test panel is gone (FEATURE_TEST_PANEL off), but the operator toggle
+    // still lives in the policy draft and drives the joiner pill.
+    expect(container.querySelector(".test-panel")).toBeNull();
+    expect(container.querySelector(".joiner-pill")?.textContent).toBe("OR");
     fireEvent.click(screen.getByRole("button", { name: "ALL" }));
-    expect(verdict()).toContain("No trigger");
-    expect(verdict()).toContain("1/2");
+    expect(container.querySelector(".joiner-pill")?.textContent).toBe("AND");
   });
 
-  it("surfaces the AI competitor finder on the library Recipients view, inline and not in the policy draft", () => {
+  it("keeps the test panel and the per-row Test action out of the UI while the flag is off", () => {
+    const { container } = renderPage();
+    addByName(container, "AWS Access Key ID");
+
+    // No panel, no scroll anchor, no sample box.
+    expect(container.querySelector(".test-panel")).toBeNull();
+    expect(container.querySelector("#test-anchor")).toBeNull();
+    expect(screen.queryByText("Test panel")).toBeNull();
+
+    // The policy column reflows with no empty gap: the draft is its only child
+    // (the gated panel/anchor leave nothing behind, not even a spacer node).
+    const colPolicy = container.querySelector(".col-policy") as HTMLElement;
+    expect(colPolicy.children).toHaveLength(1);
+    expect(colPolicy.firstElementChild?.classList.contains("policy-draft")).toBe(true);
+
+    // Expanding a library row no longer offers a dead "Test this" control.
+    fireEvent.click(container.querySelector(".lib-row-main")!);
+    expect(container.querySelector(".inspector")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Test this" })).toBeNull();
+  });
+
+  it("keeps the AI competitor finder out of the UI while its feature flag is off", () => {
     const { container } = renderPage();
 
-    // The lookup now lives WITH the other ways to build a recipient-domain list,
-    // on the Recipients surface — not buried in the policy-draft conditions corner.
+    // Hidden by default — no entry point anywhere, and never in the policy draft.
     expect(screen.queryByRole("button", { name: "Find competitors with AI" })).toBeNull();
-    expect(container.querySelector(".policy-draft .cf-panel")).toBeNull();
+    expect(container.querySelector(".lib-recipients-bar")).toBeNull();
+    expect(container.querySelector(".cf-panel")).toBeNull();
 
-    // Switch to the Recipients view: a clear entry point appears next to the packs.
+    // Even on the Recipients view, where the entry point used to sit by the packs.
     fireEvent.click(screen.getByRole("button", { name: /Recipients/ }));
-    expect(container.querySelector(".col-lib .lib-recipients-bar")).not.toBeNull();
-    const trigger = screen.getByRole("button", { name: "Find competitors with AI" });
+    expect(container.querySelector(".col-lib .lib-recipients-bar")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Find competitors with AI" })).toBeNull();
 
-    // It expands inline within the library column — never a modal overlay, and
-    // never inside the policy draft.
-    fireEvent.click(trigger);
-    expect(container.querySelector(".col-lib .cf-panel")).not.toBeNull();
-    expect(container.querySelector(".policy-draft .cf-panel")).toBeNull();
-    expect(container.querySelector(".cf-overlay")).toBeNull();
-    expect(screen.queryByRole("dialog")).toBeNull();
-    const panel = container.querySelector(".cf-panel") as HTMLElement;
-    expect(panel.querySelector(".cf-body")).not.toBeNull();
-    expect(panel.querySelector(".cf-foot")).not.toBeNull();
+    // The library reflows with no gap: the count sits directly on the list, the
+    // same as every other view that never had the recipients bar.
+    const libCount = container.querySelector(".col-lib .lib-count") as HTMLElement;
+    expect(libCount.nextElementSibling?.classList.contains("lib-list")).toBe(true);
   });
 
   it("renders the persistent nav with both destinations, Policy Creator active", () => {

@@ -13,7 +13,8 @@ export interface LibraryRowProps {
   d: Detector;
   added: boolean;
   onToggle: (d: Detector) => void;
-  onTest: (d: Detector) => void;
+  /** "Test this" entry point into the test panel. Omitted → button hidden. */
+  onTest?: (d: Detector) => void;
 }
 
 const isListType = (t: Detector["conditionType"]) =>
@@ -66,10 +67,12 @@ export function LibraryRow({ d, added, onToggle, onTest }: LibraryRowProps) {
               <Icon name={added ? "check" : "plus"} size={14} />
               {added ? "Added to policy" : "Add to policy"}
             </button>
-            <button className="btn sm" onClick={() => onTest(d)}>
-              <Icon name="flask" size={13} />
-              Test this
-            </button>
+            {onTest && (
+              <button className="btn sm" onClick={() => onTest(d)}>
+                <Icon name="flask" size={13} />
+                Test this
+              </button>
+            )}
             <CopyButton
               value={() => conditionCopyValue(d)}
               label={
