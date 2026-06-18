@@ -325,7 +325,7 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                   </option>
                 ))}
               </select>
-              <span className="wiz-hint">Only industries with their own detectors or a competitor pack are listed.</span>
+              <span className="wiz-hint">Only industries with their own detectors are listed.</span>
             </label>
           </div>
         ) : (

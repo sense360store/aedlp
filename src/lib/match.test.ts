@@ -54,10 +54,6 @@ describe("per-snippet condition outcomes (prototype engine parity)", () => {
   it("send to personal account trips freemail and disposable", () => {
     expect(trips("rcp-freemail", "snip-recipients")).toBe(true);
     expect(trips("rcp-disposable", "snip-recipients")).toBe(true);
-    // The competitor domain appears as "...at globex-industries.example" with no
-    // "@", so the local@domain recipient regex cannot match it. This mirrors the
-    // prototype engine exactly; competitor matching is covered separately below.
-    expect(trips("rcp-competitors", "snip-recipients")).toBe(false);
   });
 
   it("attachment-heavy trips the relevant file-extension families", () => {
@@ -89,12 +85,6 @@ describe("per-snippet condition outcomes (prototype engine parity)", () => {
 });
 
 describe("recipient and file matching on direct input", () => {
-  it("competitor domains match an actual recipient address", () => {
-    const d = det("rcp-competitors");
-    expect(runConditionTest(d, "Sending the roadmap to contact@globex-industries.example", true).matched).toBe(true);
-    expect(runConditionTest(d, "Send to client@trusted-partner.com", true).matched).toBe(false);
-  });
-
   it("archive family matches a filename not followed by a dot", () => {
     const d = det("fe-archives");
     expect(runConditionTest(d, "Everything is bundled in project-handoff.zip", true).matched).toBe(true);

@@ -14,7 +14,7 @@
    under `aedlp_wizard_*`. Every read tolerates absent or corrupt data by
    falling back to "show the wizard".
    ============================================================ */
-import { AEDLP_DATA, competitorPacks } from "../data/library";
+import { AEDLP_DATA } from "../data/library";
 import { slugify } from "./suggest";
 import type { AedlpData } from "../types";
 
@@ -30,8 +30,7 @@ export interface WizardAccount {
  * Minimum number of industry-specific detectors for an industry to be worth
  * offering as a pre-filter. The industry filter always also surfaces the
  * cross-industry baseline, so below this threshold the vertical brings nothing
- * of its own to the filter and we leave it out. An industry that ships a
- * competitor pack qualifies regardless of this count.
+ * of its own to the filter and we leave it out.
  */
 export const MIN_INDUSTRY_DETECTORS = 3;
 
@@ -45,16 +44,13 @@ const UMBRELLA_INDUSTRY = "Cross-industry";
 /**
  * Industries to offer in the wizard dropdown, derived from the library so the
  * list can never drift from the data or hardcode a vertical that lands on an
- * empty/meaningless filter. An industry qualifies when it ships a competitor
- * pack OR carries at least `MIN_INDUSTRY_DETECTORS` detectors of its own; the
- * Cross-industry umbrella is excluded. Order follows `AEDLP_DATA.industries`.
+ * empty/meaningless filter. An industry qualifies when it carries at least
+ * `MIN_INDUSTRY_DETECTORS` detectors of its own; the Cross-industry umbrella is
+ * excluded. Order follows `AEDLP_DATA.industries`.
  */
 export function qualifyingIndustries(data: AedlpData = AEDLP_DATA): string[] {
-  const packIndustries = new Set<string>();
-  competitorPacks.forEach((p) => (p.industries || []).forEach((i) => packIndustries.add(i)));
   return data.industries.filter((ind) => {
     if (ind === UMBRELLA_INDUSTRY) return false;
-    if (packIndustries.has(ind)) return true;
     const specific = data.detectors.filter((d) => (d.industries || []).includes(ind)).length;
     return specific >= MIN_INDUSTRY_DETECTORS;
   });

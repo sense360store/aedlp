@@ -166,5 +166,4 @@ export interface AedlpData {
 export interface RecipientDomains {
   freemail: string[];
   disposable: string[];
-  competitors: string[];
 }

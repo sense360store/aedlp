@@ -13,7 +13,7 @@ import {
   decideLanding,
   MIN_INDUSTRY_DETECTORS,
 } from "./wizard";
-import { AEDLP_DATA, competitorPacks } from "../data/library";
+import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "./search";
 
 afterEach(() => localStorage.clear());
@@ -33,8 +33,8 @@ describe("qualifyingIndustries (derived from the library)", () => {
     expect(qualifying).not.toContain("Cross-industry");
   });
 
-  it("excludes verticals with too few of their own detectors and no pack", () => {
-    // Education ships 2 industry-specific detectors and no pack — below the bar.
+  it("excludes verticals with too few of their own detectors", () => {
+    // Education ships 2 industry-specific detectors — below the bar.
     const educationSpecific = AEDLP_DATA.detectors.filter((d) =>
       (d.industries || []).includes("Education"),
     ).length;
@@ -42,17 +42,17 @@ describe("qualifyingIndustries (derived from the library)", () => {
     expect(qualifying).not.toContain("Education");
   });
 
-  it("includes every industry that ships a competitor pack", () => {
-    for (const pack of competitorPacks) {
-      for (const ind of pack.industries || []) expect(qualifying).toContain(ind);
-    }
+  it("includes verticals that carry enough of their own detectors", () => {
+    // Financial services and Aerospace & defense each ship well over the
+    // threshold of their own detectors, so both still qualify now that the
+    // static competitor packs are gone.
     expect(qualifying).toContain("Financial services");
     expect(qualifying).toContain("Aerospace & defense");
   });
 
   it("never offers a choice that lands on a vertical with nothing of its own", () => {
     // Each qualifying industry must contribute at least one of its OWN detectors
-    // (a pack counts) on top of the cross-industry baseline.
+    // on top of the cross-industry baseline.
     for (const ind of qualifying) {
       const own = AEDLP_DATA.detectors.filter((d) => (d.industries || []).includes(ind));
       expect(own.length, `${ind} should have its own detectors`).toBeGreaterThan(0);
