@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { setGlobalDismiss } from "../lib/wizard";
 
 // Flip both hidden surfaces back on to prove the gating is wired to the flags
 // (and that re-enabling is the single edit the flags promise). The components
@@ -27,6 +28,10 @@ function renderPage() {
 }
 
 describe("PolicyCreator with the hidden surfaces re-enabled", () => {
+  // The wizard front door is orthogonal to these flags — suppress it so the
+  // library/test surfaces are the landing view.
+  beforeEach(() => setGlobalDismiss(true));
+
   it("renders the test panel when FEATURE_TEST_PANEL is on", () => {
     const { container } = renderPage();
     expect(container.querySelector(".test-panel")).not.toBeNull();
