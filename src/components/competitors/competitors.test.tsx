@@ -33,7 +33,7 @@ const SAMPLE = {
 };
 
 function openAndSearch() {
-  fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+  fireEvent.click(screen.getByRole("button", { name: "Find competitors with AI" }));
   fireEvent.change(screen.getByLabelText("Company or customer name"), { target: { value: "Acme" } });
   fireEvent.click(screen.getByRole("button", { name: "Find" }));
 }
@@ -41,14 +41,14 @@ function openAndSearch() {
 describe("CompetitorFinder", () => {
   it("shows the permanent privacy note when opened", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors with AI" }));
     expect(screen.getByText(/Only the company name and industry you type are sent/i)).toBeTruthy();
     expect(screen.getByText(/extractor stay in your browser and are never sent/i)).toBeTruthy();
   });
 
   it("asks for a fuller name and does not call the API when the company is 2 chars or fewer", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors with AI" }));
     fireEvent.change(screen.getByLabelText("Company or customer name"), { target: { value: "ba" } });
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
 
@@ -66,7 +66,7 @@ describe("CompetitorFinder", () => {
 
   it("expands an inline panel (not a modal dialog) and toggles via the trigger", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
-    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    const trigger = screen.getByRole("button", { name: "Find competitors with AI" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
     fireEvent.click(trigger);
@@ -83,7 +83,7 @@ describe("CompetitorFinder", () => {
 
   it("collapses the panel on Escape", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
-    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    const trigger = screen.getByRole("button", { name: "Find competitors with AI" });
     fireEvent.click(trigger);
     expect(screen.getByText(/Only the company name and industry you type are sent/i)).toBeTruthy();
 
@@ -94,7 +94,7 @@ describe("CompetitorFinder", () => {
 
   it("collapses the panel via the visible Close button", () => {
     render(<CompetitorFinder onAdd={() => {}} />);
-    const trigger = screen.getByRole("button", { name: "Find competitors" });
+    const trigger = screen.getByRole("button", { name: "Find competitors with AI" });
     fireEvent.click(trigger);
     // The foot's "Close" is distinct from the header's "Close competitor finder".
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -104,7 +104,7 @@ describe("CompetitorFinder", () => {
 
   it("structures the panel as a pinned head/foot with a single scrolling body", () => {
     const { container } = render(<CompetitorFinder onAdd={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Find competitors" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors with AI" }));
 
     const panel = container.querySelector(".cf-panel") as HTMLElement;
     const head = container.querySelector(".cf-head") as HTMLElement;
@@ -197,6 +197,44 @@ describe("CompetitorFinder", () => {
     expect(onAdd).toHaveBeenCalledWith(["globex-industries.example"]);
     // Panel collapsed after adding.
     expect(screen.queryByText(/Only the company name and industry you type are sent/i)).toBeNull();
+  });
+
+  it("select-all picks every reviewed suggestion and deselect-all clears them", async () => {
+    fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
+    render(<CompetitorFinder onAdd={() => {}} />);
+    openAndSearch();
+    await waitFor(() => expect(screen.getByText("globex-industries.example")).toBeTruthy());
+
+    const checks = () => screen.getAllByRole("checkbox") as HTMLInputElement[];
+    // Nothing is pre-selected — adding stays deliberate.
+    expect(checks().every((c) => !c.checked)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    expect(checks().every((c) => c.checked)).toBe(true);
+    expect(screen.getByText("2/2 selected")).toBeTruthy();
+    // The footer Add now offers the whole set.
+    expect(screen.getByRole("button", { name: /Add 2 to policy/ })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Deselect all" }));
+    expect(checks().every((c) => !c.checked)).toBe(true);
+  });
+
+  it("copies the whole reviewed set (all N, newline and comma) for the AEDLP domains field", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    fetchMock.mockResolvedValue(httpJson(200, SAMPLE));
+    render(<CompetitorFinder onAdd={() => {}} />);
+    openAndSearch();
+    await waitFor(() => expect(screen.getByText("globex-industries.example")).toBeTruthy());
+
+    const all = SAMPLE.suggestions.map((s) => s.domain);
+    // Copy-all copies every suggestion, not just a selected subset.
+    fireEvent.click(screen.getByRole("button", { name: "Copy all domains" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(all.join("\n")));
+
+    fireEvent.click(screen.getByRole("button", { name: "Comma-separated" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(all.join(", ")));
   });
 
   it("renders a plain message on 401", async () => {

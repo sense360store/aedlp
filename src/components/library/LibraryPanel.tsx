@@ -5,6 +5,7 @@ import { Icon } from "../ui/Icon";
 import type { Detector } from "../../types";
 import { LibraryToolbar } from "./LibraryToolbar";
 import { LibraryRow } from "./LibraryRow";
+import { CompetitorFinder } from "../competitors/CompetitorFinder";
 
 export interface LibraryFilters {
   query: string;
@@ -23,6 +24,8 @@ export interface LibraryPanelProps {
   addedIds: Set<string>;
   onToggle: (d: Detector) => void;
   onTest: (d: Detector) => void;
+  /** Curate AI-looked-up competitor domains into a recipient-domain condition. */
+  onAddCompetitors?: (domains: string[]) => void;
 }
 
 export function LibraryPanel({
@@ -34,7 +37,11 @@ export function LibraryPanel({
   addedIds,
   onToggle,
   onTest,
+  onAddCompetitors,
 }: LibraryPanelProps) {
+  // The competitor lookup lives WITH the other ways to build a recipient-domain
+  // list, so surface it on the Recipients view — next to the static packs.
+  const showRecipientTools = onAddCompetitors && filters.type === "recipient_domain";
   return (
     <div className="library">
       <LibraryToolbar
@@ -58,6 +65,16 @@ export function LibraryPanel({
         </span>
         {filters.query && <span className="muted">matching “{filters.query}”</span>}
       </div>
+
+      {showRecipientTools && (
+        <div className="lib-recipients-bar">
+          <span className="lrb-text">
+            <Icon name="sparkle" size={14} />
+            No pack fits? Look up a company’s competitors and curate them into a recipient-domain condition.
+          </span>
+          <CompetitorFinder onAdd={onAddCompetitors} triggerClassName="btn sm cf-entry" />
+        </div>
+      )}
 
       <div className="lib-list">
         {results.length === 0 ? (
