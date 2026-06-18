@@ -29,16 +29,21 @@ ctx.onmessage = async (e) => {
   const file = req.file;
   try {
     let result: ParsedResult;
+    let lastP = 0;
+    const onProgress = (p: number) => {
+      lastP = p;
+      post({ kind: "progress", p });
+    };
+    // Row counts ride the same progress channel, tagged with the latest byte
+    // fraction so the UI can show "N rows processed" alongside the bar.
+    const onRows = (rows: number) => post({ kind: "progress", p: lastP, rows });
     if (isCSV(file)) {
-      result = await parseCSV(file, (p) => post({ kind: "progress", p }));
+      result = await parseCSV(file, onProgress, onRows);
     } else {
       // Locate the sheet that actually holds the contact rows (never assume the
       // first sheet); the same selection drives the page and the wizard upload.
       const { target, names } = await selectSheet(file, req.sheetName);
-      result = await parseWorkbookStream(file, target, {
-        onProgress: (p) => post({ kind: "progress", p }),
-        allSheetNames: names,
-      });
+      result = await parseWorkbookStream(file, target, { onProgress, onRows, allSheetNames: names });
     }
     post({ kind: "result", result });
   } catch (err) {

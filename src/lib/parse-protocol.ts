@@ -12,7 +12,7 @@ export interface ParseRequest {
 }
 
 export type ParseResponse =
-  | { kind: "progress"; p: number }
+  | { kind: "progress"; p: number; rows?: number }
   | { kind: "sheet"; names: string[] }
   | { kind: "result"; result: ParsedResult }
   | { kind: "error"; message: string };

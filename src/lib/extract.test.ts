@@ -153,6 +153,16 @@ describe("parseCSV (streaming)", () => {
     const file = new File([csv], "bad.csv", { type: "text/csv" });
     await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: a, b, c/);
   });
+
+  it("rejects a wrong-shape CSV fast with the friendly banner, even with thousands of rows", async () => {
+    // No email column anywhere; detection gives up after its scan window and stops
+    // reading rather than scanning the whole (here, large) file. The banner lists
+    // the header it captured early, proving it only needed the first rows.
+    const lines = ["alpha,beta,gamma"];
+    for (let i = 0; i < 5_000; i++) lines.push(`v${i}-a,v${i}-b,v${i}-c`);
+    const file = new File([lines.join("\n")], "wrong-shape.csv", { type: "text/csv" });
+    await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: alpha, beta, gamma/);
+  });
 });
 
 describe("locateColumns — header alias matching", () => {
