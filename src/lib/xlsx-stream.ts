@@ -32,20 +32,34 @@ import {
   type SheetHeader,
 } from "./extract";
 
-/* ---------------- memory guardrails ----------------
-   The sheet rows stream with bounded memory (one decompression chunk + the
-   running domain set), but two things in a workbook are NOT inherently bounded
-   and could still OOM the tab on a pathological/huge file:
-     • the shared-strings table, which every reader must materialise to resolve
-       string cells — a 250 MB workbook can carry a very large one;
+/* ---------------- memory guardrails (a high backstop, not the gate) ----------------
+   The sheet rows stream with bounded memory (one decompression chunk + the running
+   domain set), and the shared-strings table is now parsed as a stream too (one <si>
+   at a time out of a rolling buffer — see createSharedStringsParser). So an ordinary
+   large export — 115 MB, 250 MB — streams and parses normally; it is no longer
+   refused up front.
+
+   Two things still are not *inherently* bounded and could OOM a pathological/huge
+   file, so we keep a HIGH last-resort ceiling on each:
+     • the shared-strings table — every reader must hold the resolved strings to
+       look up string cells by index, so the array itself grows with the file. We
+       allow it up to a generous 1 GB of text (well past any normal export) and
+       abort only beyond that;
      • a single worksheet row, if the XML is malformed and never closes a <row>.
-   We cap both. Crossing a cap means "streaming is not viable for this file": we
-   abort BEFORE exhausting memory and surface the CSV-fallback banner (CSV streams
+   Crossing either cap means "even streaming this is unsafe": we abort BEFORE
+   exhausting memory and surface the calm CSV-fallback banner (CSV streams
    line-by-line with flat memory). The caps are overridable so tests can trip them
-   with small fixtures. */
+   with small fixtures.
+
+   Belt-and-braces on top of the byte caps, a memory PRESSURE probe (where the
+   engine exposes one — performance.memory in Chromium) is sampled mid-stream; if
+   the tab is genuinely close to its heap limit we abort to the same banner rather
+   than crash. It is a no-op where unavailable (Firefox/Safari/Node), where the
+   byte caps remain the guard. */
 export interface StreamLimits {
-  /** Max decompressed bytes for a single metadata entry — in practice the
-   *  shared-strings table. Beyond this we abort with the CSV-fallback banner. */
+  /** Max decompressed bytes for the shared-strings table (and the small workbook
+   *  metadata entries). A normal 250 MB export is comfortably under this; beyond it
+   *  even streaming is unsafe, so we abort with the CSV-fallback banner. */
   maxMetaBytes: number;
   /** Max chars allowed to accumulate in the rolling row buffer (i.e. the size of
    *  one worksheet row). A row larger than this is pathological; abort rather than
@@ -54,12 +68,40 @@ export interface StreamLimits {
 }
 
 export const DEFAULT_LIMITS: StreamLimits = {
-  maxMetaBytes: 256 * 1024 * 1024, // 256 MB of shared-strings text
+  maxMetaBytes: 1024 * 1024 * 1024, // 1 GB of shared-strings text — a high backstop, not a gate
   maxRowBufferChars: 16 * 1024 * 1024, // ~16M chars for a single row
 };
 
 function resolveLimits(limits?: Partial<StreamLimits>): StreamLimits {
   return { ...DEFAULT_LIMITS, ...limits };
+}
+
+/* ---------------- memory-pressure probe ----------------
+   Returns the tab's current heap usage as a fraction in [0,1], or a negative
+   number when the engine does not expose one. `performance.memory` is a
+   non-standard Chromium extension, so this is best-effort: it adds a real
+   "never OOM" net where present and costs nothing where absent. */
+export type MemoryProbe = () => number;
+
+interface JSHeapInfo {
+  usedJSHeapSize: number;
+  jsHeapSizeLimit: number;
+}
+
+export const defaultMemoryProbe: MemoryProbe = () => {
+  const mem =
+    typeof performance !== "undefined" ? (performance as unknown as { memory?: JSHeapInfo }).memory : undefined;
+  if (!mem || !mem.jsHeapSizeLimit) return -1;
+  return mem.usedJSHeapSize / mem.jsHeapSizeLimit;
+};
+
+/** Abort once the heap is this close to its ceiling — early enough to unwind
+ *  cleanly to the banner rather than hit the hard OOM and lose the tab. */
+export const MAX_HEAP_FRACTION = 0.92;
+
+/** Throw the CSV-fallback (too-large) error if the tab is under memory pressure. */
+function assertMemoryOk(probe: MemoryProbe): void {
+  if (probe() >= MAX_HEAP_FRACTION) throw tooLargeError();
 }
 
 const WORKBOOK_PATH = "xl/workbook.xml";
@@ -251,24 +293,66 @@ function resolveXlPath(target: string): string {
   return t.startsWith("/") ? t.slice(1) : "xl/" + t;
 }
 
-/* ---------------- shared strings ---------------- */
-function parseSharedStrings(xml: string): string[] {
+/* ---------------- shared strings (streamed) ----------------
+   The shared-strings table can be the single largest part of a big workbook, so
+   we never decode it into one giant string and re-scan it. Instead we pull one
+   <si> element at a time out of a small rolling buffer as decompressed chunks
+   arrive, append the resolved string to the result array, and drop the consumed
+   prefix. Peak transient memory is therefore one chunk + one partial <si> on top
+   of the result array — not three full copies of the table (merged bytes + decoded
+   string + parsed array) as a batch decode would hold. Output is identical to a
+   single-shot parse of the whole entry. */
+function createSharedStringsParser() {
   const out: string[] = [];
+  let buffer = "";
   const siRe = /<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g;
-  let m: RegExpExecArray | null;
-  while ((m = siRe.exec(xml))) {
-    const inner = m[1];
-    if (inner === undefined) {
-      out.push(""); // <si/>
-      continue;
+  const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+  const drain = () => {
+    siRe.lastIndex = 0;
+    let consumed = 0;
+    let m: RegExpExecArray | null;
+    while ((m = siRe.exec(buffer))) {
+      consumed = siRe.lastIndex;
+      const inner = m[1];
+      if (inner === undefined) {
+        out.push(""); // <si/>
+        continue;
+      }
+      let text = "";
+      tRe.lastIndex = 0;
+      let tm: RegExpExecArray | null;
+      while ((tm = tRe.exec(inner))) text += tm[1];
+      out.push(unescapeXml(text));
     }
-    let text = "";
-    const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
-    let tm: RegExpExecArray | null;
-    while ((tm = tRe.exec(inner))) text += tm[1];
-    out.push(unescapeXml(text));
+    // Slice off everything up to the last complete <si> (this also discards the
+    // leading <?xml…?><sst…> preamble); only a partial trailing <si> is carried
+    // forward into the next chunk.
+    if (consumed > 0) buffer = buffer.slice(consumed);
+  };
+  return {
+    push(text: string) {
+      buffer += text;
+      drain();
+    },
+    result(): string[] {
+      return out;
+    },
+  };
+}
+
+// Merge decompressed chunks of a small entry and decode them in one shot. Used
+// only for the tiny workbook.xml / workbook.xml.rels entries (the big
+// shared-strings entry is streamed, never merged — see createSharedStringsParser).
+function decodeChunks(chunks: Uint8Array[]): string {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const merged = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) {
+    merged.set(c, o);
+    o += c.length;
   }
-  return out;
+  return new TextDecoder("utf-8").decode(merged);
 }
 
 /* ---------------- cell parsing ---------------- */
@@ -337,34 +421,63 @@ interface WorkbookMeta {
   sharedStrings: string[];
 }
 
-// Read and parse only the small metadata entries (workbook.xml, its rels, and the
-// shared strings) — never a sheet. Shared by the sheet-name lister, the header
-// scanner and the full streaming parser so they agree on names/paths/strings.
+// Read the small metadata entries (workbook.xml, its rels) and STREAM-parse the
+// shared-strings table — never a sheet — in a single pass over the zip. Shared by
+// the sheet-name lister, the header scanner and the full streaming parser so they
+// agree on names/paths/strings. The shared strings are parsed incrementally (one
+// <si> at a time) so the table is never held as one giant string; the byte cap and
+// the memory probe abort to the CSV-fallback banner before the heap is exhausted.
 async function readWorkbookMeta(
   file: Blob,
   onRead?: (bytesRead: number) => void,
-  maxMetaBytes?: number,
+  maxMetaBytes: number = DEFAULT_LIMITS.maxMetaBytes,
+  probe: MemoryProbe = defaultMemoryProbe,
 ): Promise<WorkbookMeta> {
-  const meta = await readEntries(
+  const wbChunks: Uint8Array[] = [];
+  const relsChunks: Uint8Array[] = [];
+  let wbBytes = 0;
+  let relsBytes = 0;
+  const ss = createSharedStringsParser();
+  let ssBytes = 0;
+  const ssDecoder = new TextDecoder("utf-8");
+
+  await streamZip(
     file,
     (n) => n === WORKBOOK_PATH || n === WORKBOOK_RELS_PATH || SHARED_STRINGS_RE.test(n),
-    undefined,
-    onRead,
-    maxMetaBytes,
+    (name, chunk, final) => {
+      if (name === WORKBOOK_PATH) {
+        if (chunk.length) {
+          wbBytes += chunk.length;
+          if (wbBytes > maxMetaBytes) throw tooLargeError();
+          wbChunks.push(chunk);
+        }
+        return;
+      }
+      if (name === WORKBOOK_RELS_PATH) {
+        if (chunk.length) {
+          relsBytes += chunk.length;
+          if (relsBytes > maxMetaBytes) throw tooLargeError();
+          relsChunks.push(chunk);
+        }
+        return;
+      }
+      // shared strings — stream-parse <si> out of a rolling buffer
+      if (chunk.length) {
+        ssBytes += chunk.length;
+        if (ssBytes > maxMetaBytes) throw tooLargeError(); // abort before the array runs past the ceiling
+        assertMemoryOk(probe); // …or before the tab is genuinely out of memory
+      }
+      ss.push(ssDecoder.decode(chunk, { stream: !final }));
+    },
+    { onRead },
   );
-  const wbXml = meta.get(WORKBOOK_PATH);
-  const relsXml = meta.get(WORKBOOK_RELS_PATH);
+
+  const wbXml = decodeChunks(wbChunks);
+  const relsXml = decodeChunks(relsChunks);
   if (!wbXml || !relsXml) throw new Error("This file is not a readable .xlsx workbook.");
   const { names, nameToRid } = parseWorkbookXml(wbXml);
   const ridToTarget = parseRels(relsXml);
-  let sharedStrings: string[] = [];
-  for (const [name, xml] of meta) {
-    if (SHARED_STRINGS_RE.test(name)) {
-      sharedStrings = parseSharedStrings(xml);
-      break;
-    }
-  }
-  return { names, nameToRid, ridToTarget, sharedStrings };
+  return { names, nameToRid, ridToTarget, sharedStrings: ss.result() };
 }
 
 // Resolve a sheet name to its decompressed entry path via the workbook rels.
@@ -485,6 +598,10 @@ export interface WorkbookStreamOptions {
   /** Override the memory guardrails (defaults to DEFAULT_LIMITS). Mainly for tests
    *  that trip a cap with a small fixture. */
   limits?: Partial<StreamLimits>;
+  /** Override the heap-pressure probe (defaults to performance.memory where the
+   *  engine exposes it, else a no-op). Mainly for tests that simulate a tab close
+   *  to its memory ceiling and assert a clean abort. */
+  memoryProbe?: MemoryProbe;
 }
 
 export async function parseWorkbookStream(
@@ -494,17 +611,20 @@ export async function parseWorkbookStream(
 ): Promise<ParsedResult> {
   const { onProgress, onRows, onStats, allSheetNames } = options;
   const limits = resolveLimits(options.limits);
+  const probe = options.memoryProbe ?? defaultMemoryProbe;
   const size = file.size || 0;
 
-  // ---- pass 1: workbook metadata + shared strings (small entries only) ----
-  // The shared-strings cap here is the main OOM guard: a huge table aborts with
-  // the CSV-fallback banner before it is ever fully held in memory.
+  // ---- pass 1: workbook metadata + streamed shared strings ----
+  // The shared-strings table streams in one <si> at a time (never materialised as a
+  // single string); the high byte cap and the memory probe are the last-resort OOM
+  // guards — a table past the ceiling aborts to the CSV-fallback banner.
   const meta = await readWorkbookMeta(
     file,
     (read) => {
       if (size) onProgress?.(Math.min(0.49, read / (size * 2)));
     },
     limits.maxMetaBytes,
+    probe,
   );
   const sheetPath = sheetPathFor(meta, sheetName);
   if (!sheetPath) throw new Error('Sheet "' + sheetName + '" could not be read.');
@@ -600,6 +720,7 @@ export async function parseWorkbookStream(
     (n) => n === sheetPath,
     (_name, chunk, final) => {
       if (aborted) return;
+      assertMemoryOk(probe); // abort cleanly if the tab is near its heap ceiling — never OOM
       sheetBytes += chunk.length;
       feed(decoder.decode(chunk, { stream: !final }));
       if (final) sheetDone = true;

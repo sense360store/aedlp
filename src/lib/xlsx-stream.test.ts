@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { zipSync, strToU8 } from "fflate";
 import { CSV_FALLBACK_MESSAGE, pickSheet, TARGET_SHEET, trustedDomainsFromParsed, type ParsedResult } from "./extract";
 import {
+  DEFAULT_LIMITS,
   readSheetNamesStream,
   readSheetHeadersStream,
   parseWorkbookStream,
@@ -510,5 +511,87 @@ describe("memory guardrails & fast rejection (large / wrong-shape / too-large fi
     await parseWorkbookStream(fileFromSample(), "unauthorised_contacts", { onRows: (n) => seen.push(n) });
     expect(seen.length).toBeGreaterThan(0);
     expect(seen[seen.length - 1]).toBeGreaterThanOrEqual(3); // header + 3 data rows examined
+  });
+});
+
+describe("size guard is a high backstop, not the gate (large shared-strings tables parse)", () => {
+  // Build a workbook with a genuinely large shared-strings table: tens of thousands
+  // of DISTINCT contact emails (so the string table is sizeable) that nonetheless
+  // de-dupe to a handful of domains — exactly the shape of a real enforcer export,
+  // where the table is the largest part of the file but the result is tiny.
+  const DOMAINS = ["alpha.com", "bravo.com", "charlie.com", "delta.com", "echo.com"];
+  const EMAILS = 60_000;
+  function bigSharedStringsXlsx() {
+    // shared strings: header labels (0,1), the type values (2,3), then 60k unique emails
+    const strings = ["contact_ad", "contact_type", "external", "freemail"];
+    for (let i = 0; i < EMAILS; i++) strings.push(`contact.person.${i}@${DOMAINS[i % DOMAINS.length]}`);
+    const parts: string[] = [`<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>`];
+    for (let i = 0; i < EMAILS; i++) {
+      const r = i + 2;
+      const addrIdx = 4 + i; // unique email per row
+      const typeIdx = i % 2 === 0 ? 2 : 3; // external / freemail
+      parts.push(`<row r="${r}"><c r="A${r}" t="s"><v>${addrIdx}</v></c><c r="B${r}" t="s"><v>${typeIdx}</v></c></row>`);
+    }
+    return zipXlsx({ sheetName: "unauthorised_contacts", rowsXml: parts.join(""), sharedStrings: strings });
+  }
+
+  it("the raised default ceiling is a true backstop (>= 1 GB), well past any normal export", () => {
+    // Documents the fix: the cap is no longer a 256 MB gate that refuses 115/250 MB
+    // files — it only catches the pathological multi-GB case.
+    expect(DEFAULT_LIMITS.maxMetaBytes).toBeGreaterThanOrEqual(1024 * 1024 * 1024);
+  });
+
+  it("parses a workbook with a multi-MB shared-strings table under the DEFAULT cap (not refused)", async () => {
+    const file = new File([bigSharedStringsXlsx()], "big-shared-strings.xlsx");
+    // Parsed with the real default limits — NOT refused, even though the string
+    // table is far larger than the old 256 MB-era thinking would have been wary of.
+    const res = await parseWorkbookStream(file, "unauthorised_contacts");
+    expect(res.scanned).toBe(EMAILS);
+    expect(res.map.size).toBe(DOMAINS.length); // 60k unique emails -> 5 domains
+    expect([...res.map.keys()].sort()).toEqual([...DOMAINS].sort());
+    expect(res.typeTotals.get("external")).toBe(EMAILS / 2);
+    expect(res.typeTotals.get("freemail")).toBe(EMAILS / 2);
+  });
+
+  it("still refuses only when the table genuinely exceeds the ceiling (low cap trips the same file)", async () => {
+    // Prove the ceiling is what governs refusal: drop it far below the table size
+    // and the very same file aborts to the calm CSV-fallback banner.
+    const file = new File([bigSharedStringsXlsx()], "big-shared-strings.xlsx");
+    await expect(
+      parseWorkbookStream(file, "unauthorised_contacts", { limits: { maxMetaBytes: 64 * 1024 } }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+  });
+});
+
+describe("never OOM: aborts cleanly to the banner under memory pressure", () => {
+  // A probe reporting the tab is near its heap ceiling must unwind to the friendly
+  // CSV-fallback banner rather than let the parse push the tab into a hard OOM.
+  const underPressure = () => 0.99; // >= MAX_HEAP_FRACTION
+
+  it("aborts during shared-strings streaming when memory pressure is detected", async () => {
+    // A workbook that carries a shared-strings table (the abort fires in pass 1).
+    const strings = Array.from({ length: 500 }, (_, i) => `string-${i}`);
+    const rowsXml = `<row r="1"><c r="A1" t="s"><v>0</v></c></row>`;
+    const file = new File([zipXlsx({ sheetName: "unauthorised_contacts", rowsXml, sharedStrings: strings })], "p.xlsx");
+    await expect(
+      parseWorkbookStream(file, "unauthorised_contacts", { memoryProbe: underPressure }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+  });
+
+  it("aborts during sheet streaming when memory pressure is detected (inline-string file, no shared table)", async () => {
+    // Inline strings -> no shared-strings entry, so the abort must fire in pass 2
+    // (the sheet stream loop) instead.
+    const rowsXml =
+      `<row r="1">${inlineCell("A1", "contact_ad")}${inlineCell("B1", "contact_type")}</row>` +
+      `<row r="2">${inlineCell("A2", "partner@vendor.com")}${inlineCell("B2", "external")}</row>`;
+    const file = new File([zipXlsx({ sheetName: "unauthorised_contacts", rowsXml })], "p-inline.xlsx");
+    await expect(
+      parseWorkbookStream(file, "unauthorised_contacts", { memoryProbe: underPressure }),
+    ).rejects.toThrow(CSV_FALLBACK_MESSAGE);
+
+    // …and with a healthy probe the same file parses fine (the probe is the only
+    // difference), so the guard does not false-positive.
+    const ok = await parseWorkbookStream(file, "unauthorised_contacts", { memoryProbe: () => 0.1 });
+    expect([...ok.map.keys()]).toEqual(["vendor.com"]);
   });
 });

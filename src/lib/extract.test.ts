@@ -7,6 +7,7 @@ import {
   isCSV,
   isUnauthSheetName,
   locateColumns,
+  makeAccumulator,
   parseCSV,
   pickSheet,
   TARGET_SHEET,
@@ -276,5 +277,51 @@ describe("trustedDomainsFromParsed (wizard default selection)", () => {
       [["external", 3], ["freemail", 5]],
     );
     expect(trustedDomainsFromParsed(res)).toEqual(["partner.com"]);
+  });
+});
+
+describe("makeAccumulator — streaming reducer holds bounded state over many rows", () => {
+  // The reducer is the heart of the streaming parse: each row is folded into the
+  // running domain map and then DISCARDED. Feeding a huge number of rows must grow
+  // state only with the (tiny) number of distinct domains/types — never with the
+  // row count — which is what keeps a 100 MB+ file parseable in flat memory.
+  it("aggregates a million rows into O(distinct domains) state, not O(rows)", () => {
+    const DOMAINS = ["alpha.com", "bravo.com", "charlie.com", "delta.com", "echo.com"];
+    const TYPES = ["external", "freemail"];
+    const N = 1_000_000;
+    const acc = makeAccumulator();
+    for (let i = 0; i < N; i++) {
+      const dom = DOMAINS[i % DOMAINS.length];
+      const type = TYPES[i % TYPES.length];
+      // a fresh, unique local-part every row — the row itself is never retained
+      acc.add(type, `user${i}@${dom}`);
+    }
+    const r = acc.result();
+
+    // every row counted, but the retained map is bounded by distinct domains only
+    expect(r.scanned).toBe(N);
+    expect(r.map.size).toBe(DOMAINS.length);
+    expect([...r.map.keys()].sort()).toEqual([...DOMAINS].sort());
+    // bounded state proof: O(domains) << O(rows), and per-domain only O(types)
+    expect(r.map.size * 100_000).toBeLessThanOrEqual(N);
+    for (const rec of r.map.values()) expect(rec.types.size).toBeLessThanOrEqual(TYPES.length);
+    // and the aggregate is exact
+    const totalAcross = [...r.map.values()].reduce((s, rec) => s + rec.total, 0);
+    expect(totalAcross).toBe(N);
+    expect(r.typeTotals.get("external")).toBe(N / 2);
+    expect(r.typeTotals.get("freemail")).toBe(N / 2);
+  });
+
+  it("ignores non-addresses without growing the map (blank/garbage rows are dropped)", () => {
+    const acc = makeAccumulator();
+    for (let i = 0; i < 10_000; i++) {
+      acc.add("external", "not-an-email"); // no domain -> not retained
+      acc.add("external", ""); // blank -> not retained
+    }
+    acc.add("external", "real@kept.com");
+    const r = acc.result();
+    expect(r.scanned).toBe(20_001); // every row is still counted as scanned
+    expect(r.map.size).toBe(1); // …but only the one real domain is retained
+    expect([...r.map.keys()]).toEqual(["kept.com"]);
   });
 });
