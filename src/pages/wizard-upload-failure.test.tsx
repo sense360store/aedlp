@@ -47,9 +47,9 @@ describe("Wizard step two — malformed file (component)", () => {
     expect(document.querySelector(".wiz-note.quiet")).not.toBeNull();
     expect(document.querySelector(".callout")).toBeNull();
 
-    // Finishing still works and carries no trusted list.
+    // Finishing still works and carries neither a trusted list nor competitors.
     fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
-    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null);
+    expect(onFinish).toHaveBeenCalledWith({ customer: "Globex", industry: "Financial services" }, false, null, null);
   });
 });
 

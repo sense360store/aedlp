@@ -118,23 +118,17 @@ describe("PolicyCreator page", () => {
     expect(screen.queryByRole("button", { name: "Test this" })).toBeNull();
   });
 
-  it("keeps the AI competitor finder out of the UI while its feature flag is off", () => {
+  it("surfaces the AI competitor finder on the Recipients view as a first-class, un-gated feature", () => {
     const { container } = renderPage();
 
-    // Hidden by default — no entry point anywhere, and never in the policy draft.
-    expect(screen.queryByRole("button", { name: "Find competitors with AI" })).toBeNull();
+    // Not on a non-recipient view (it builds a recipient-domain condition)…
     expect(container.querySelector(".lib-recipients-bar")).toBeNull();
-    expect(container.querySelector(".cf-panel")).toBeNull();
-
-    // Even on the Recipients view, where the entry point used to sit by the packs.
-    fireEvent.click(screen.getByRole("button", { name: /Recipients/ }));
-    expect(container.querySelector(".col-lib .lib-recipients-bar")).toBeNull();
     expect(screen.queryByRole("button", { name: "Find competitors with AI" })).toBeNull();
 
-    // The library reflows with no gap: the count sits directly on the list, the
-    // same as every other view that never had the recipients bar.
-    const libCount = container.querySelector(".col-lib .lib-count") as HTMLElement;
-    expect(libCount.nextElementSibling?.classList.contains("lib-list")).toBe(true);
+    // …but it is a normal, visible feature on the Recipients view — no flag to flip.
+    fireEvent.click(screen.getByRole("button", { name: /Recipients/ }));
+    expect(container.querySelector(".col-lib .lib-recipients-bar")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Find competitors with AI" })).toBeTruthy();
   });
 
   it("renders the persistent nav with both destinations, Policy Creator active", () => {
@@ -421,5 +415,118 @@ describe("PolicyCreator wizard step two (optional enforcer-export upload)", () =
     const keys = Object.keys(localStorage);
     expect(keys.some((k) => k.startsWith("aedlp_wizard_"))).toBe(true);
     expect(keys).not.toContain(TRUSTED_KEY); // nothing uploaded this run
+  });
+});
+
+/* The two distinct outputs of the wizard's step two: a trusted ALLOW-LIST (upload,
+   persisted to the store) and a competitor BLOCK-LIST (GenAI lookup, added as a
+   separate condition). They must never cross-contaminate. */
+describe("PolicyCreator wizard — trusted allow-list vs competitor block-list", () => {
+  const TRUSTED_KEY = "aedlp_trusted_domains";
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function httpJson(status: number, body: unknown): Response {
+    return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+  }
+
+  // Upload fixture → trusted allow-list (external domains, freemail excluded).
+  const PARSED: ParsedResult = {
+    map: new Map([
+      ["partner.com", { types: new Map([["external", 2]]), total: 2 }],
+      ["vendor.io", { types: new Map([["external", 1]]), total: 1 }],
+      ["gmail.com", { types: new Map([["freemail", 3]]), total: 3 }],
+    ]),
+    scanned: 6,
+    typeTotals: new Map([
+      ["external", 3],
+      ["freemail", 3],
+    ]),
+    sheetName: "unauthorised_contacts",
+  };
+  const TRUSTED = ["partner.com", "vendor.io"];
+  const CF_SAMPLE = {
+    suggestions: [
+      { name: "Globex Rival", domain: "globex-rival.example", confidence: "high", verified: true, rationale: "Direct competitor." },
+      { name: "Initech", domain: "initech.example", confidence: "medium", verified: false, rationale: "Adjacent." },
+    ],
+    notes: "Found 2 competitor suggestions.",
+  };
+
+  function stepOne(customer = "Globex", industry = "Financial services") {
+    fireEvent.change(screen.getByPlaceholderText(/Globex Corporation/), { target: { value: customer } });
+    fireEvent.change(screen.getByLabelText("Industry"), { target: { value: industry } });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  }
+  function uploadFile(container: HTMLElement, file: File) {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  it("lands curated competitors as a SEPARATE block-list condition, never in the trusted store", async () => {
+    mockParseFile.mockResolvedValue({ kind: "result", result: PARSED });
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    const { container } = renderPage();
+
+    // Step one, then build BOTH lists on step two.
+    stepOne("Globex", "Financial services");
+    uploadFile(container, new File(["data"], "enforcer.xlsx"));
+    await screen.findByText(/2 trusted domains found/i); // allow-list ready
+
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors for Globex" }));
+    await screen.findByText("globex-rival.example"); // block-list suggestions
+    fireEvent.click(screen.getByRole("checkbox", { name: /Select Globex Rival/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The trusted store holds ONLY the uploaded allow-list — the competitor domain
+    // never leaks into it. The two lists do not cross-contaminate.
+    const trusted = JSON.parse(localStorage.getItem(TRUSTED_KEY) || "null");
+    expect(trusted).toEqual(TRUSTED);
+    expect(trusted).not.toContain("globex-rival.example");
+
+    // The competitor block-list is auto-added on finish as its own condition…
+    expect(screen.getByText(/Competitor domains .* block-list \(from lookup\)/)).toBeTruthy();
+    expect(container.textContent).toContain("globex-rival.example");
+    // …and it is the only condition added (the allow-list waits behind its "Use" bar).
+    expect(container.querySelector(".added-pill")?.textContent).toContain("1 in policy");
+  });
+
+  it("keeps allow-list and block-list as two distinct conditions when both are loaded", async () => {
+    mockParseFile.mockResolvedValue({ kind: "result", result: PARSED });
+    fetchMock.mockResolvedValue(httpJson(200, CF_SAMPLE));
+    const { container } = renderPage();
+
+    stepOne("Globex", "Financial services");
+    uploadFile(container, new File(["data"], "enforcer.xlsx"));
+    await screen.findByText(/2 trusted domains found/i);
+    fireEvent.click(screen.getByRole("button", { name: "Find competitors for Globex" }));
+    await screen.findByText("globex-rival.example");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Select Globex Rival/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start in Policy Creator" }));
+
+    // The competitor block-list is in the draft; the trusted bar offers the allow-list.
+    expect(screen.getByText(/Competitor domains .* block-list \(from lookup\)/)).toBeTruthy();
+    expect(screen.queryByText("Trusted / allowed recipient domains (from extract)")).toBeNull();
+
+    // Loading the trusted allow-list adds it as a SECOND, separate condition.
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+    expect(screen.getByText("Trusted / allowed recipient domains (from extract)")).toBeTruthy();
+    expect(container.querySelector(".added-pill")?.textContent).toContain("2 in policy");
+
+    // Each list keeps its own domains — they were never merged.
+    const conditions = [...container.querySelectorAll<HTMLElement>(".cond-row")];
+    const blockRow = conditions.find((r) => /block-list/.test(r.textContent || ""))!;
+    const allowRow = conditions.find((r) => /Trusted \/ allowed/.test(r.textContent || ""))!;
+    expect(blockRow.textContent).toContain("globex-rival.example");
+    expect(blockRow.textContent).not.toContain("partner.com");
+    expect(allowRow.textContent).toContain("partner.com");
+    expect(allowRow.textContent).not.toContain("globex-rival.example");
   });
 });

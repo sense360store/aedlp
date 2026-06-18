@@ -40,8 +40,9 @@ export function LibraryPanel({
   onTest,
   onAddCompetitors,
 }: LibraryPanelProps) {
-  // The competitor lookup lives WITH the other ways to build a recipient-domain
-  // list, so surface it on the Recipients view — next to the static packs.
+  // The competitor lookup is a first-class way to build a recipient-domain
+  // (competitor block-list) condition without the wizard, so surface it on the
+  // Recipients view alongside the seed packs.
   const showRecipientTools = onAddCompetitors && filters.type === "recipient_domain";
   return (
     <div className="library">
@@ -71,7 +72,7 @@ export function LibraryPanel({
         <div className="lib-recipients-bar">
           <span className="lrb-text">
             <Icon name="sparkle" size={14} />
-            No pack fits? Look up a company’s competitors and curate them into a recipient-domain condition.
+            Look up a company’s competitors and curate their domains into a competitor block-list condition.
           </span>
           <CompetitorFinder onAdd={onAddCompetitors} triggerClassName="btn sm cf-entry" />
         </div>

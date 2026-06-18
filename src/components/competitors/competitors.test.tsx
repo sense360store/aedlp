@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { CompetitorFinder } from "./CompetitorFinder";
-import { makeCompetitorCondition } from "../../lib/competitors";
+import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../../lib/competitors";
+import { makeTrustedCondition, TRUSTED_CONDITION_ID } from "../../lib/trusted";
 
 const fetchMock = vi.fn();
 
@@ -268,5 +269,31 @@ describe("makeCompetitorCondition", () => {
       expect(cond.domains).toEqual(["globex.example", "initech.example"]);
     }
     expect(cond.recommendedAction).toBe("warn_require_justification");
+  });
+
+  it("labels the condition unmistakably as a competitor BLOCK-list (not an allow-list)", () => {
+    const cond = makeCompetitorCondition(["globex.example"]);
+    expect(cond.displayName).toMatch(/block-list/i);
+    expect(cond.description).toMatch(/block-list/i);
+    // It says, in words, that it is the opposite of the trusted allow-list.
+    expect(cond.description.toLowerCase()).toContain("allow-list");
+    expect((cond.notes ?? []).join(" ")).toMatch(/never written to the trusted-domain store/i);
+  });
+
+  it("stays distinct from the trusted allow-list condition (separate id, separate action)", () => {
+    const block = makeCompetitorCondition(["rival.example"]);
+    const allow = makeTrustedCondition(["partner.com"]);
+    // Different stable ids → they coexist as two conditions, never replacing each other.
+    expect(block.id).toBe(COMPETITOR_CONDITION_ID);
+    expect(allow.id).toBe(TRUSTED_CONDITION_ID);
+    expect(block.id).not.toBe(allow.id);
+    // The allow-list silently tracks (permitted); the block-list flags (unauthorised).
+    expect(allow.recommendedAction).toBe("silently_track");
+    expect(block.recommendedAction).not.toBe("silently_track");
+    // Their domain sets are independent.
+    if (block.conditionType === "recipient_domain" && allow.conditionType === "recipient_domain") {
+      expect(block.domains).toEqual(["rival.example"]);
+      expect(allow.domains).toEqual(["partner.com"]);
+    }
   });
 });

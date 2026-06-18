@@ -676,6 +676,14 @@ code { font-family: var(--font-mono); }
 .wiz-note.quiet > svg { color: var(--text-3); }
 .wiz-preview { max-height: 132px; overflow: auto; padding: 2px; }
 
+/* step two sub-section headings (allow-list vs competitor block-list) and the
+   competitor-lookup action row. Reuses the find-competitors result tokens. */
+.wiz-section-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 660; }
+.wiz-section-head svg { color: var(--accent); flex-shrink: 0; }
+.wiz-divider { height: 1px; background: var(--border); flex-shrink: 0; }
+.wiz-cf-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wiz-cf-rerun { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
 @media (max-width: 600px) {
   .wiz-reopen span { display: none; }
   .wiz-overlay { padding: 14px; align-items: flex-start; }
