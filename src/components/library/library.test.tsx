@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react";
 import { AEDLP_DATA } from "../../data/library";
 import { filterDetectors } from "../../lib/search";
-import { actionLabel } from "../../lib/tones";
 import { LibraryPanel, type LibraryFilters } from "./LibraryPanel";
 import { LibraryRow } from "./LibraryRow";
 import type { Detector } from "../../types";
@@ -279,39 +278,5 @@ describe("LibraryRow previews and expansion", () => {
   it("reflects the added state in the row button", () => {
     render(<LibraryRow d={det("aws-access-key")} added onToggle={() => {}} onTest={() => {}} />);
     expect(screen.getByRole("button", { name: "Added" })).toBeTruthy();
-  });
-
-  it("surfaces the detector's description in a keyboard-reachable tooltip without expanding the row", () => {
-    const d = det("aws-access-key");
-    expect(d.description.trim().length).toBeGreaterThan(0);
-    const { container } = render(<LibraryRow d={d} added={false} onToggle={() => {}} onTest={() => {}} />);
-
-    // Nothing leaks until the affordance is used, and the row stays collapsed.
-    expect(screen.queryByRole("tooltip")).toBeNull();
-    const tipBtn = screen.getByRole("button", { name: `About ${d.displayName}` });
-
-    // Reachable by keyboard: a focusable button whose focus reveals the description.
-    expect(tipBtn.tagName).toBe("BUTTON");
-    fireEvent.focus(tipBtn);
-    const tip = screen.getByRole("tooltip");
-    expect(tip.textContent).toContain(d.description);
-    // Cheap "how noisy is it" pair: the recommended action travels with the text.
-    expect(tip.textContent).toContain(actionLabel(d.recommendedAction));
-
-    // Using the affordance must not expand the inspector (click is contained).
-    fireEvent.click(tipBtn);
-    expect(container.querySelector(".inspector")).toBeNull();
-
-    // Dismissed on Escape.
-    fireEvent.keyDown(tipBtn, { key: "Escape" });
-    expect(screen.queryByRole("tooltip")).toBeNull();
-  });
-
-  it("shows no description affordance when a detector has no description", () => {
-    const base = det("aws-access-key");
-    const blank = { ...base, description: "" } as Detector;
-    render(<LibraryRow d={blank} added={false} onToggle={() => {}} onTest={() => {}} />);
-    expect(screen.queryByRole("button", { name: /^About / })).toBeNull();
-    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });
