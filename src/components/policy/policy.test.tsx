@@ -177,7 +177,7 @@ describe("PolicyDraft", () => {
   });
 
   it("gives a recipient-domain condition select/copy-all controls with an expandable list", async () => {
-    const rcp = makeCond(det("rcp-competitors-aerospace"));
+    const rcp = makeCond(det("rcp-disposable"));
     if (rcp.conditionType !== "recipient_domain") throw new Error("expected a recipient detector");
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });

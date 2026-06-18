@@ -154,14 +154,15 @@ describe("parseCSV (streaming)", () => {
     await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: a, b, c/);
   });
 
-  it("rejects a wrong-shape CSV fast with the friendly banner, even with thousands of rows", async () => {
-    // No email column anywhere; detection gives up after its scan window and stops
-    // reading rather than scanning the whole (here, large) file. The banner lists
-    // the header it captured early, proving it only needed the first rows.
-    const lines = ["alpha,beta,gamma"];
-    for (let i = 0; i < 5_000; i++) lines.push(`v${i}-a,v${i}-b,v${i}-c`);
-    const file = new File([lines.join("\n")], "wrong-shape.csv", { type: "text/csv" });
-    await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: alpha, beta, gamma/);
+  it("fails fast on a large no-email CSV instead of scanning every line", async () => {
+    // Far more rows than the header-scan window, none carrying an email: detection
+    // gives up within the window and rejects with the banner (no hang, no full read).
+    const lines = ["id,note"];
+    for (let i = 0; i < 50_000; i++) lines.push(`${i},note-${i}`);
+    const file = new File([lines.join("\n")], "wrong.csv", { type: "text/csv" });
+    const t0 = Date.now();
+    await expect(parseCSV(file)).rejects.toThrow(/recipient email column.*Columns found: id, note/);
+    expect(Date.now() - t0).toBeLessThan(5_000);
   });
 });
 

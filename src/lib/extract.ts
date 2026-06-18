@@ -210,17 +210,17 @@ export interface ResolvedColumns {
 export interface ColumnResolver {
   /** Feed one non-blank row of cells (indexed by column position). Returns the
    *  resolved columns the moment they are known — after which feed() must not be
-   *  called again — or null to keep feeding. */
+   *  called again — or null. A null result means EITHER "keep feeding" OR "given
+   *  up": call exhausted() to tell them apart so the caller can fail fast. */
   feed(cells: unknown[]): ResolvedColumns | null;
   /** Force a decision from whatever has been buffered, for when the stream ends
    *  before feed() resolved. Returns the columns, or null when no email column
    *  could be found at all (the caller then raises columnsNotFoundError). */
   finalize(): ResolvedColumns | null;
-  /** True once detection has conclusively given up — it scanned its whole window
-   *  (HEADER_SCAN_LIMIT rows) without finding an address column. After feed()
-   *  returns null with this set there is nothing more to find, so the caller MUST
-   *  stop feeding rather than keep parsing the rest of a huge sheet (the bound
-   *  that turns a ~minute hang on a wrong-shape file into an instant rejection). */
+  /** True once detection has given up within the bounded scan window — the email
+   *  column was not found in the first {@link HEADER_SCAN_LIMIT} non-blank rows.
+   *  The streaming readers consult this to fail fast (raise the banner) instead of
+   *  reading the rest of a wrong-shape file, which would OOM the tab. */
   exhausted(): boolean;
   /** The non-empty header labels seen (the first non-blank buffered row), for the
    *  "columns found" banner when resolution fails. */
@@ -355,6 +355,10 @@ export async function parseCSV(
   const resolver = createColumnResolver();
   let buf = "";
   let cols: Columns | null = null;
+  // Set once the header scan window closes without finding an email column: there
+  // is nothing left to find, so stop reading instead of scanning the whole file
+  // (the bound that makes a wrong-shape file reject fast even at hundreds of MB).
+  let aborted = false;
   let read = 0;
   let rowsSeen = 0; // data lines processed once the header is known (for row progress)
   let reported = 0;
@@ -364,17 +368,16 @@ export async function parseCSV(
     cols = { type: r.type, addr: r.addr };
     for (const row of r.replay) addRow(row); // data rows the resolver buffered while detecting
   };
-  // Set once the header scan window closes without finding an email column: there
-  // is nothing left to find, so stop reading instead of scanning the whole file
-  // (the bound that makes a wrong-shape file reject fast even at hundreds of MB).
-  let aborted = false;
   const handle = (line: string) => {
-    if (line === "") return;
+    if (line === "" || aborted) return;
     const cells = splitCSVLine(line);
     if (!cols) {
       const r = resolver.feed(cells);
       if (r) apply(r);
-      else if (resolver.exhausted()) aborted = true; // give up fast — no header column
+      // No email column within the bounded scan window: stop now instead of
+      // reading the rest of a wrong-shape file (fail fast to the banner).
+      else if (resolver.exhausted()) aborted = true;
+      // else: not the header yet (or stray line) — keep scanning
       return;
     }
     rowsSeen++;
@@ -398,17 +401,15 @@ export async function parseCSV(
         onRows(rowsSeen);
       }
     }
-    if (aborted) break;
-    if (done) {
-      if (buf.trim()) handle(buf.replace(/\r$/, ""));
+    if (done || aborted) {
+      if (done && !aborted && buf.trim()) handle(buf.replace(/\r$/, ""));
       break;
     }
   }
-  if (aborted) {
-    await reader.cancel().catch(() => {});
-    throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
-  }
+  if (aborted) await reader.cancel().catch(() => {});
   if (!cols) {
+    // finalize() returns null once the resolver is exhausted (incl. the fail-fast
+    // abort), so a wrong-shape file raises the banner here either way.
     const r = resolver.finalize();
     if (r) apply(r);
     else throw columnsNotFoundError(resolver.foundHeaders(), "CSV");
