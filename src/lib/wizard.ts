@@ -56,6 +56,39 @@ export function qualifyingIndustries(data: AedlpData = AEDLP_DATA): string[] {
   });
 }
 
+/* ---------------- industry coverage hints (wizard-only) ---------------- */
+
+/**
+ * A one-line, plain-language hint of what each industry broadly covers, shown
+ * under the wizard's industry dropdown so an SE can recognise which vertical a
+ * customer belongs to (e.g. an airline is Transportation & logistics) without
+ * guessing. Deliberately wizard-only — NOT the per-detector tooltips the library
+ * dropped. Each value is ONE short phrase: no company names, no sub-industry
+ * lists, no long enumerations (kept minimal so it stays scannable). Keyed by the
+ * exact industry label in `AEDLP_DATA.industries`; cover every label so a
+ * selected industry always has a hint.
+ */
+export const INDUSTRY_HINTS: Record<string, string> = {
+  "Cross-industry": "Applies across every industry",
+  "Financial services": "Banking and financial products",
+  Insurance: "Insuring people and businesses against risk",
+  "Healthcare & life sciences": "Medical care and life sciences",
+  "Technology & SaaS": "Software and online services",
+  "Legal & professional services": "Legal and professional advisory work",
+  "Manufacturing & engineering": "Designing and making physical products",
+  "Aerospace & defense": "Aircraft and military equipment",
+  "Transportation & logistics": "Moving people and goods",
+  "Retail & e-commerce": "Selling goods in shops and online",
+  "Energy & utilities": "Power and utility supply",
+  "Public sector": "Government and public services",
+  Education: "Schools and education providers",
+};
+
+/** The coverage hint for an industry, or "" when none is known (render nothing). */
+export function industryHint(industry: string): string {
+  return INDUSTRY_HINTS[industry] ?? "";
+}
+
 /* ---------------- policy field prefill ---------------- */
 
 /** Policy name in the agreed format: "<Customer>, <Industry> DLP". */

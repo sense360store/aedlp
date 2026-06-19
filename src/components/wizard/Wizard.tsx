@@ -52,7 +52,7 @@ import { isCSV, isTooLargeError, trustedDomainsFromParsed } from "../../lib/extr
 import { diagnosticsFromError, type ParseDiagnostics } from "../../lib/diagnostics";
 import { fetchCompetitors, type CompetitorSuggestion } from "../../lib/competitors";
 import { CompetitorResultList } from "../competitors/CompetitorResultList";
-import type { WizardAccount } from "../../lib/wizard";
+import { industryHint, type WizardAccount } from "../../lib/wizard";
 
 export interface WizardProps {
   /** Whether the wizard overlay is shown. */
@@ -429,7 +429,18 @@ export function Wizard({ open, industries, onFinish, onSkip }: WizardProps) {
                   </option>
                 ))}
               </select>
-              <span className="wiz-hint">Only industries with their own detectors are listed.</span>
+              {/* Before a choice: why the list is short. After: a short, static
+                  plain-language line of what the picked sector covers, so the SE
+                  can sanity-check the fit (e.g. an airline → Transportation &
+                  logistics). Wizard-only; not a per-detector tooltip. */}
+              {industry && industryHint(industry) ? (
+                <span className="wiz-hint wiz-cover">
+                  <Icon name="info" size={12} />
+                  {industryHint(industry)}
+                </span>
+              ) : (
+                <span className="wiz-hint">Only industries with their own detectors are listed.</span>
+              )}
             </label>
           </div>
         ) : (
