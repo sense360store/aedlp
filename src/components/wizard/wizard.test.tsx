@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { Wizard } from "./Wizard";
+import { industryHint } from "../../lib/wizard";
 import type { ParseOutcome } from "../../lib/parseClient";
 import type { ParsedResult } from "../../lib/extract";
 
@@ -77,6 +78,24 @@ describe("Wizard step one", () => {
     const values = [...select.options].map((o) => o.value);
     expect(values).toEqual(["", ...INDUSTRIES]);
     expect(select.options[0].disabled).toBe(true);
+  });
+
+  it("shows the list-scope note until an industry is picked, then its coverage hint", () => {
+    setup();
+    // Before a choice the dropdown explains why the list is short…
+    expect(screen.getByText(/Only industries with their own detectors are listed/i)).toBeTruthy();
+
+    // …and selecting one replaces it with that sector's short coverage hint.
+    fireEvent.change(screen.getByLabelText("Industry"), { target: { value: "Financial services" } });
+    const hint = industryHint("Financial services");
+    expect(hint).not.toBe("");
+    expect(screen.getByText(hint)).toBeTruthy();
+    expect(screen.queryByText(/Only industries with their own detectors are listed/i)).toBeNull();
+
+    // The hint tracks the current selection rather than pinning to the first.
+    fireEvent.change(screen.getByLabelText("Industry"), { target: { value: "Technology & SaaS" } });
+    expect(screen.getByText(industryHint("Technology & SaaS"))).toBeTruthy();
+    expect(screen.queryByText(hint)).toBeNull();
   });
 
   it("disables Next until a customer name AND an industry are chosen", () => {

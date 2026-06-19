@@ -669,6 +669,11 @@ code { font-family: var(--font-mono); }
 .wiz-label { font-size: 12px; font-weight: 620; color: var(--text-2); }
 .wiz-select { cursor: pointer; }
 .wiz-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+/* Coverage hint: a small inline "what this sector covers" line on the selected
+   industry. The icon inherits the muted hint colour (currentColor) — subtle, not
+   a callout. */
+.wiz-hint.wiz-cover { display: inline-flex; align-items: center; gap: 5px; }
+.wiz-hint.wiz-cover > svg { flex-shrink: 0; }
 
 .wiz-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 13px 16px; border-top: 1px solid var(--border); background: var(--surface-2);

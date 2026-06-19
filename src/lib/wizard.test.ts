@@ -2,6 +2,8 @@
 import { afterEach, describe, it, expect } from "vitest";
 import {
   qualifyingIndustries,
+  INDUSTRY_HINTS,
+  industryHint,
   wizardPolicyName,
   wizardPolicyDescription,
   wizardPolicyTags,
@@ -59,6 +61,40 @@ describe("qualifyingIndustries (derived from the library)", () => {
       // And the live filter returns a real, non-empty result.
       expect(filterDetectors(AEDLP_DATA.detectors, { industry: ind }).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("industry coverage hints", () => {
+  it("gives every taxonomy industry — and so every dropdown choice — a hint", () => {
+    // A hint for every label in the taxonomy guarantees that any industry the
+    // wizard can offer (qualifying ⊆ taxonomy) always resolves to one.
+    for (const ind of AEDLP_DATA.industries) {
+      expect(INDUSTRY_HINTS[ind], `${ind} should have a coverage hint`).toBeTruthy();
+    }
+    for (const ind of qualifyingIndustries()) {
+      expect(industryHint(ind), `${ind} (offered) should resolve a hint`).not.toBe("");
+    }
+  });
+
+  it("keeps each hint a single short phrase — no company names or long lists", () => {
+    const COMPANY_NAMES = ["British Airways", "Globex", "Initech", "Initrode", "Acme"];
+    for (const [ind, hint] of Object.entries(INDUSTRY_HINTS)) {
+      // One short, single-line phrase (minimal for HCI).
+      expect(hint, `${ind}`).not.toContain("\n");
+      expect(hint.length, `${ind} hint is short`).toBeLessThanOrEqual(60);
+      expect(hint.trim().split(/\s+/).length, `${ind} hint is few words`).toBeLessThanOrEqual(8);
+      // No enumerations / lists: no commas, semicolons, slashes or "e.g."/"etc".
+      expect(hint, `${ind} avoids list punctuation`).not.toMatch(/[,;/]|\be\.g\.|\betc\b/i);
+      // No company names — neither the brief's example nor the app's placeholders.
+      for (const name of COMPANY_NAMES) {
+        expect(hint.toLowerCase(), `${ind} names no company`).not.toContain(name.toLowerCase());
+      }
+    }
+  });
+
+  it("returns an empty string (render nothing) for an unknown industry", () => {
+    expect(industryHint("Not a real industry")).toBe("");
+    expect(industryHint("")).toBe("");
   });
 });
 
