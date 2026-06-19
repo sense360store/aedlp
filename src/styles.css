@@ -498,6 +498,26 @@ code { font-family: var(--font-mono); }
 .dom-x:hover { background: var(--danger-bg); color: var(--danger); }
 .dom-empty { padding: 40px; text-align: center; color: var(--text-3); font-size: 12.5px; }
 
+/* trusted-list hygiene — per-row risk flags + the summary / remove bar.
+   Tonal pills (amber freemail, red disposable, violet competitor) reused both
+   on the rows and as the count chips in the bar. */
+.dom-flag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 1px 7px; border-radius: 999px; flex-shrink: 0; white-space: nowrap; border: 1px solid var(--border); }
+.dom-flag.freemail { color: var(--amber-text); background: var(--amber-weak); border-color: var(--amber-border); }
+.dom-flag.disposable { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
+.dom-flag.competitor { color: var(--violet-text); background: var(--violet-weak); border-color: var(--violet-border); }
+.dom-row.flagged { box-shadow: inset 2px 0 0 var(--warn); }
+
+.hygiene-bar { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 12px 0; padding: 10px 14px;
+  border: 1px solid var(--warn-border); background: var(--warn-bg); border-radius: var(--radius-sm);
+  font-size: 12.5px; color: var(--text); }
+.hygiene-bar.done { border-color: var(--ok-border); background: var(--ok-bg); }
+.hygiene-ic { color: var(--warn); flex-shrink: 0; }
+.hygiene-bar.done .hygiene-ic { color: var(--ok); }
+.hygiene-text { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.hygiene-breakdown { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.hygiene-actions { display: inline-flex; gap: 8px; flex-shrink: 0; }
+
 .toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .toolbar-row .grow { flex: 1; min-width: 160px; }
 .add-row { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--surface-2); }

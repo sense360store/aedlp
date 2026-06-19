@@ -2,8 +2,15 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { CompetitorFinder } from "./CompetitorFinder";
-import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../../lib/competitors";
-import { makeTrustedCondition, TRUSTED_CONDITION_ID } from "../../lib/trusted";
+import {
+  makeCompetitorCondition,
+  COMPETITOR_CONDITION_ID,
+  COMPETITOR_LS_KEY,
+  loadCompetitorBlocklist,
+  saveCompetitorBlocklist,
+  clearCompetitorBlocklist,
+} from "../../lib/competitors";
+import { makeTrustedCondition, TRUSTED_CONDITION_ID, TRUSTED_LS_KEY } from "../../lib/trusted";
 
 const fetchMock = vi.fn();
 
@@ -295,5 +302,40 @@ describe("makeCompetitorCondition", () => {
       expect(block.domains).toEqual(["rival.example"]);
       expect(allow.domains).toEqual(["partner.com"]);
     }
+  });
+});
+
+describe("competitor block-list session store", () => {
+  afterEach(() => localStorage.clear());
+
+  it("uses a separate key from the trusted-domain store", () => {
+    expect(COMPETITOR_LS_KEY).not.toBe(TRUSTED_LS_KEY);
+  });
+
+  it("round-trips the curated block-list and clears it", () => {
+    expect(loadCompetitorBlocklist()).toEqual([]);
+    saveCompetitorBlocklist(["rival.example", "globex.example"]);
+    expect(localStorage.getItem(COMPETITOR_LS_KEY)).toBe(
+      JSON.stringify(["rival.example", "globex.example"]),
+    );
+    expect(loadCompetitorBlocklist()).toEqual(["rival.example", "globex.example"]);
+    clearCompetitorBlocklist();
+    expect(loadCompetitorBlocklist()).toEqual([]);
+    expect(localStorage.getItem(COMPETITOR_LS_KEY)).toBeNull();
+  });
+
+  it("never writes the block-list into the trusted-domain store", () => {
+    saveCompetitorBlocklist(["rival.example"]);
+    // The trusted store is untouched — the two lists must not cross-contaminate.
+    expect(localStorage.getItem(TRUSTED_LS_KEY)).toBeNull();
+  });
+
+  it("returns [] for missing or malformed data without throwing", () => {
+    localStorage.setItem(COMPETITOR_LS_KEY, "not json");
+    expect(loadCompetitorBlocklist()).toEqual([]);
+    localStorage.setItem(COMPETITOR_LS_KEY, JSON.stringify({ not: "an array" }));
+    expect(loadCompetitorBlocklist()).toEqual([]);
+    localStorage.setItem(COMPETITOR_LS_KEY, JSON.stringify(["ok.example", 5, null]));
+    expect(loadCompetitorBlocklist()).toEqual(["ok.example"]);
   });
 });

@@ -15,6 +15,8 @@ import { CopyButton } from "../components/ui/CopyButton";
 import { DiagnosticBanner } from "../components/ui/DiagnosticBanner";
 import { useTheme } from "../theme";
 import { loadTrustedDomains, saveTrustedDomains } from "../lib/trusted";
+import { loadCompetitorBlocklist } from "../lib/competitors";
+import { analyzeDomains, buildHygieneSets, HYGIENE_FLAGS, FLAG_LABEL, FLAG_REASON } from "../lib/hygiene";
 import { isCSV, emailDomain, isTooLargeError, type ParsedResult } from "../lib/extract";
 import { diagnosticsFromError, type ParseDiagnostics } from "../lib/diagnostics";
 import { parseFile } from "../lib/parseClient";
@@ -144,6 +146,15 @@ export default function Extractor() {
   const [removed, setRemoved] = useState<Set<string>>(() => new Set());
   const [manual, setManual] = useState<{ domain: string }[]>([]);
   const [manualInput, setManualInput] = useState("");
+  // The batch the last "Remove all flagged" pulled out, kept so it can be undone
+  // (the action is one click, so it must not be destructive by accident). Cleared
+  // on undo, on a fresh "Remove all flagged", and whenever a new file is loaded.
+  const [undoFlagged, setUndoFlagged] = useState<string[] | null>(null);
+
+  // The curated competitor BLOCK-list this session, if the Policy Creator built
+  // one (mirrored to a separate localStorage key). Read once on mount — this is a
+  // different route, so it remounts and re-reads after the user curates over there.
+  const [competitorBlocklist] = useState<string[]>(() => loadCompetitorBlocklist());
 
   // Read the shared store once on mount. When a list already exists — saved here
   // before, or by the wizard's upload on finish — open straight onto it in the
@@ -178,6 +189,7 @@ export default function Extractor() {
       setRemoved(new Set());
       setManual([]);
       setSearch("");
+      setUndoFlagged(null);
       setLoaded([]); // a fresh parse supersedes any restored list
       setParsed(res);
       // default the type filter to whichever of external/freemail exists
@@ -228,6 +240,37 @@ export default function Extractor() {
     [baseDomains, deselected],
   );
 
+  /* Trusted-list hygiene: cross-check the working list against the freemail and
+     disposable packs and (if one exists this session) the competitor block-list.
+     Pure local set-intersection — no network, no GenAI. Flags every domain in
+     scope, so the count is "X of N" over the whole list, not just the page. */
+  const hygieneSets = useMemo(() => buildHygieneSets(competitorBlocklist), [competitorBlocklist]);
+  const hygiene = useMemo(
+    () => analyzeDomains(baseDomains.map((d) => d.domain), hygieneSets),
+    [baseDomains, hygieneSets],
+  );
+
+  // Remove every flagged domain in one click, remembering the batch so it can be
+  // undone — the list is the user's curated allow-list, so this is reversible.
+  const removeAllFlagged = () => {
+    const batch = hygiene.flagged;
+    if (!batch.length) return;
+    setRemoved((s) => {
+      const n = new Set(s);
+      batch.forEach((d) => n.add(d));
+      return n;
+    });
+    setUndoFlagged(batch);
+  };
+  const undoFlaggedRemoval = () => {
+    setRemoved((s) => {
+      const n = new Set(s);
+      (undoFlagged ?? []).forEach((d) => n.delete(d));
+      return n;
+    });
+    setUndoFlagged(null);
+  };
+
   // Explicit handoff: save the curated allow-list and go to the Policy Creator.
   // This is a deliberate user action, not a silent background write.
   const useInPolicyCreator = () => {
@@ -244,6 +287,7 @@ export default function Extractor() {
     setLoaded([]);
     setError("");
     setDiagnostics(null);
+    setUndoFlagged(null);
   };
 
   const visible = useMemo(() => {
@@ -475,6 +519,56 @@ export default function Extractor() {
                 </div>
               </div>
 
+              {(hygiene.flaggedCount > 0 || undoFlagged) && (
+                <div
+                  className={"hygiene-bar" + (hygiene.flaggedCount > 0 ? "" : " done")}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Icon name={hygiene.flaggedCount > 0 ? "alert" : "check"} size={16} className="hygiene-ic" />
+                  {hygiene.flaggedCount > 0 ? (
+                    <div className="hygiene-text">
+                      <span>
+                        <b>{hygiene.flaggedCount.toLocaleString()}</b> of {hygiene.total.toLocaleString()} look risky for
+                        an allow-list
+                      </span>
+                      <span className="hygiene-breakdown">
+                        {HYGIENE_FLAGS.filter((f) => hygiene.counts[f] > 0).map((f) => (
+                          <span key={f} className={`dom-flag ${f}`}>
+                            {hygiene.counts[f].toLocaleString()} {FLAG_LABEL[f]}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="hygiene-text">
+                      <span>
+                        Removed <b>{undoFlagged!.length.toLocaleString()}</b> flagged domain
+                        {undoFlagged!.length === 1 ? "" : "s"} from the list.
+                      </span>
+                    </div>
+                  )}
+                  <span className="hygiene-actions">
+                    {hygiene.flaggedCount > 0 && (
+                      <button
+                        className="btn xs"
+                        onClick={removeAllFlagged}
+                        title="Remove every flagged domain from the list (you can undo this)"
+                      >
+                        <Icon name="trash" size={12} />
+                        Remove all flagged
+                      </button>
+                    )}
+                    {undoFlagged && (
+                      <button className="btn xs ghost" onClick={undoFlaggedRemoval} title="Restore the removed domains">
+                        <Icon name="reset" size={12} />
+                        Undo
+                      </button>
+                    )}
+                  </span>
+                </div>
+              )}
+
               <div className="dom-list">
                 <div className="dom-list-head">
                   <span style={{ flex: 1 }}>
@@ -500,8 +594,12 @@ export default function Extractor() {
                   )}
                   {shown.map((d) => {
                     const on = !deselected.has(d.domain);
+                    const flags = hygiene.flags.get(d.domain);
                     return (
-                      <div key={d.domain} className={"dom-row" + (on ? "" : " off") + (d.manual ? " manual" : "")}>
+                      <div
+                        key={d.domain}
+                        className={"dom-row" + (on ? "" : " off") + (d.manual ? " manual" : "") + (flags ? " flagged" : "")}
+                      >
                         <button
                           className={"chk" + (on ? " on" : "")}
                           onClick={() => toggle(d.domain)}
@@ -512,6 +610,11 @@ export default function Extractor() {
                         <span className="dom-name" title={d.domain}>
                           {d.domain}
                         </span>
+                        {flags?.map((flag) => (
+                          <span key={flag} className={`dom-flag ${flag}`} title={FLAG_REASON[flag]}>
+                            {FLAG_LABEL[flag]}
+                          </span>
+                        ))}
                         {d.manual ? (
                           <span className="dom-tag">added</span>
                         ) : d.count > 0 ? (
