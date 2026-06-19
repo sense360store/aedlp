@@ -12,7 +12,12 @@ import { AEDLP_DATA } from "../data/library";
 import { filterDetectors } from "../lib/search";
 import { buildEffectiveRegex } from "../lib/regex";
 import { loadTrustedDomains, saveTrustedDomains, makeTrustedCondition, TRUSTED_CONDITION_ID } from "../lib/trusted";
-import { makeCompetitorCondition, COMPETITOR_CONDITION_ID } from "../lib/competitors";
+import {
+  makeCompetitorCondition,
+  COMPETITOR_CONDITION_ID,
+  saveCompetitorBlocklist,
+  clearCompetitorBlocklist,
+} from "../lib/competitors";
 import { suggestAction, suggestDescription, suggestName, suggestTags } from "../lib/suggest";
 import { FEATURE_TEST_PANEL } from "../lib/features";
 import { LibraryPanel, type LibraryFilters } from "../components/library/LibraryPanel";
@@ -160,8 +165,16 @@ export default function PolicyCreator() {
     setAdded((prev) =>
       prev.some((c) => c.id === d.id) ? prev.filter((c) => c.id !== d.id) : [...prev, makeCondition(d)],
     );
-  const onRemove = (id: string) => setAdded((prev) => prev.filter((c) => c.id !== id));
-  const onClear = () => setAdded([]);
+  const onRemove = (id: string) => {
+    // Removing the competitor block-list condition retires the session store the
+    // extractor's hygiene check reads, so it never flags against a stale list.
+    if (id === COMPETITOR_CONDITION_ID) clearCompetitorBlocklist();
+    setAdded((prev) => prev.filter((c) => c.id !== id));
+  };
+  const onClear = () => {
+    clearCompetitorBlocklist();
+    setAdded([]);
+  };
   const onToggleBoundary = (id: string, on: boolean) =>
     setAdded((prev) =>
       prev.map((c) =>
@@ -202,6 +215,10 @@ export default function PolicyCreator() {
         ? prev.map((c) => (c.id === COMPETITOR_CONDITION_ID ? cond : c))
         : [...prev, cond],
     );
+    // Mirror the curated block-list into the session store so the extractor's
+    // trusted-list hygiene check can flag any allow-list domain that is actually
+    // a competitor. The block-list is never written to the trusted-domain store.
+    saveCompetitorBlocklist(domains);
   };
 
   /* ----- wizard front door -----

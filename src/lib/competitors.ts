@@ -33,6 +33,40 @@ export type LookupResult =
 /** Stable id so re-adding a lookup replaces the condition instead of stacking it. */
 export const COMPETITOR_CONDITION_ID = "rcp-competitor-lookup";
 
+/**
+ * Session store for the curated competitor BLOCK-list.
+ *
+ * The Policy Creator mirrors the current competitor condition's domains here so
+ * the Trusted Domain Extractor (a separate route) can cross-check its allow-list
+ * against "the competitor block-list, if one exists in the session" — see
+ * lib/hygiene.ts. This is a deliberately SEPARATE key from the trusted-domain
+ * store (lib/trusted.TRUSTED_LS_KEY): the allow-list and the block-list must
+ * never share storage. Only domains are persisted; no network.
+ */
+export const COMPETITOR_LS_KEY = "aedlp_competitor_blocklist";
+
+/** Read the curated competitor block-list. Never throws on missing/garbage data. */
+export function loadCompetitorBlocklist(): string[] {
+  try {
+    const raw = localStorage.getItem(COMPETITOR_LS_KEY);
+    if (!raw) return [];
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the current competitor block-list for the extractor's hygiene check. */
+export function saveCompetitorBlocklist(domains: string[]): void {
+  localStorage.setItem(COMPETITOR_LS_KEY, JSON.stringify(domains));
+}
+
+/** Drop the stored competitor block-list (e.g. its condition was removed). */
+export function clearCompetitorBlocklist(): void {
+  localStorage.removeItem(COMPETITOR_LS_KEY);
+}
+
 const CONFIDENCES: ReadonlySet<string> = new Set(["high", "medium", "low"]);
 
 function coerceSuggestion(v: unknown): CompetitorSuggestion | null {

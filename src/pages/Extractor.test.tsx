@@ -30,6 +30,7 @@ vi.mock("../lib/parseClient", () => {
 });
 
 import Extractor from "./Extractor";
+import { COMPETITOR_LS_KEY } from "../lib/competitors";
 
 afterEach(() => {
   cleanup();
@@ -137,5 +138,72 @@ describe("Extractor page", () => {
     // …and the curated allow-list was persisted under the shared key.
     const stored = JSON.parse(localStorage.getItem("aedlp_trusted_domains") || "null");
     expect(stored).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
+  });
+});
+
+describe("Extractor page — trusted-list hygiene", () => {
+  function rowFlags(container: HTMLElement): string[] {
+    // Row badges live inside the scroll region; the summary bar's count chips
+    // (also .dom-flag) sit outside it, so scoping to .dom-scroll isolates rows.
+    return Array.from(container.querySelectorAll<HTMLElement>(".dom-scroll .dom-flag")).map(
+      (el) => el.textContent || "",
+    );
+  }
+  const hygieneBar = (container: HTMLElement) => container.querySelector(".hygiene-bar") as HTMLElement | null;
+
+  it("flags freemail domains on the allow-list and counts the risky ones", async () => {
+    const { container } = renderPage();
+    await selectFile(container);
+
+    // The default "external" view holds only the clean domain — nothing to flag.
+    expect(hygieneBar(container)).toBeNull();
+
+    // Switch to "all": the two freemail domains are now in scope and flagged.
+    clickAllSegment(container);
+    expect(rowFlags(container).filter((t) => t === "freemail")).toHaveLength(2);
+    // The clean external domain is not flagged.
+    expect(rowFlags(container)).not.toContain("competitor");
+
+    const bar = hygieneBar(container)!;
+    expect(bar).not.toBeNull();
+    expect(bar.textContent).toContain("2 of 3 look risky for an allow-list");
+    expect(bar.textContent).toContain("2 freemail");
+  });
+
+  it("'Remove all flagged' clears the flagged domains and Undo restores them", async () => {
+    const { container } = renderPage();
+    await selectFile(container);
+    clickAllSegment(container);
+
+    expect(whitelistLines(container)).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove all flagged" }));
+
+    // Only the clean domain remains; the flagged freemail domains are gone.
+    expect(whitelistLines(container)).toEqual(["soteria365.com"]);
+    expect(rowFlags(container)).toHaveLength(0);
+    const bar = hygieneBar(container)!;
+    expect(bar.textContent).toContain("Removed 2 flagged domains");
+
+    // Undo is non-destructive: it brings the removed domains straight back.
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(whitelistLines(container)).toEqual(["gmail.com", "hotmail.com", "soteria365.com"]);
+    expect(rowFlags(container).filter((t) => t === "freemail")).toHaveLength(2);
+  });
+
+  it("flags a trusted domain that is on the session's competitor block-list", async () => {
+    // Seed the curated competitor block-list the Policy Creator would have written.
+    localStorage.setItem(COMPETITOR_LS_KEY, JSON.stringify(["soteria365.com"]));
+    const { container } = renderPage();
+    await selectFile(container);
+    clickAllSegment(container);
+
+    // Now every domain is risky: two freemail + the one competitor.
+    expect(rowFlags(container)).toContain("competitor");
+    expect(rowFlags(container).filter((t) => t === "freemail")).toHaveLength(2);
+    expect(hygieneBar(container)!.textContent).toContain("3 of 3 look risky for an allow-list");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove all flagged" }));
+    expect(whitelistLines(container)).toEqual([]);
   });
 });
